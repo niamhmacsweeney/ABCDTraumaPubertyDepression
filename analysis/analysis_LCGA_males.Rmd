@@ -1,0 +1,850 @@
+---
+title: "analysis_LCGA_males"
+author: "Niamh MacSweeney"
+date: "2024-08-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Introduction
+
+This script will be used to run latent class growth analysis in the MALE ABCD Sample to examine changes in pubertal development over time and generate classes to use in our later analysis. This analysis was not pre-registered and is included in our paper as sensitivity analysis following peer-review. 
+
+This script is the same as the analysis_LCGA.Rmd which was used to run our main analysis in the female ABCD sample. 
+
+See our pre-registered protocol for full details of our analysis plan: https://osf.io/txsvh (uploaded to OSF on 23.05.23)
+
+```{r setup}
+
+#load libraries
+library(tidyverse) # includes ggplot2
+library(ggtext)     # for extra text options
+library(ggdist)     # for extra geoms
+library(patchwork)  # for composing multiple plots
+library(lcmm)
+library(lavaan)
+library(hrbrthemes) #for plotting
+library(stats)
+library(lme4)
+library(knitr) #for tables
+library(pander) #for tables
+library(tableHTML)
+
+#extra packages for plotting 
+library(nord)
+library(scico)
+library(wesanderson)
+library(taylor)
+library(viridis)
+library(ggtext)     # for extra text options
+library(ggdist)     # for extra geoms
+library(patchwork)  #  composing multiple plots
+library(ggridges) #for ridge plots
+
+library(ggrain)
+library(flextable)
+
+#set working directory
+setwd("/ess/p33/cluster/users/niamhma/ABCDTraumaPuberty/analysis")
+```
+
+## Load in cleaned data from prep_descriptives.Rmd script 
+
+```{r load data}
+
+data <- readRDS("../data/cleanDataMales5.0.rds")
+
+#check variable type
+str(data)
+#change subject to factor and then to numeric 
+data$id <- as.factor(data$src_subject_id) %>% 
+            as.numeric()
+
+data$time <- as.factor(data$time) %>% 
+  as.numeric()
+
+str(data)
+
+```
+
+
+```{r inspect data distribution}
+
+summary_data <- aggregate(pds_avg ~ time, data = data, FUN = mean) #mean outcome for each timepoint
+
+summary_plot <- ggplot(data = summary_data, aes(x = time, y = pds_avg)) +
+  geom_bar(stat = "identity") +
+  theme_classic()
+summary_plot
+
+#inspect data available per follow up timepoint
+sampleSizes <- data %>% 
+  select(src_subject_id, time, pds_avg) %>% 
+  group_by(time) %>% 
+  count()
+sampleSizes
+
+
+```
+
+```{r reduce df to 4 follow-up timepoints}
+
+# #We can do this by filtering df for when time is not equal to T5 because the puberty data are the only data with this follow-up data available, that is relevant. 
+# 
+# data <- data %>% 
+#   filter(time != 5) #19453 observations
+
+```
+
+
+Keep unrelated individuals only for ease of modelling later 
+
+```{r unrelated sample}
+
+data <- data[data$src_subject_id %in% c(data[!duplicated(data$rel_family_id),"src_subject_id"]),] #keep one member from each family but keep all observations for that family member as the data is in long format. 
+n_distinct(data$rel_family_id) #4756
+n_distinct(data$src_subject_id) #4756
+
+```
+##Centre age
+To start, we will centre age on the mean age at wave 1. This won't affect the model fit but it will make the intercepts (and the differences between intercepts) easier to interpret. 
+
+```{r centre age}
+
+#N = 4 males have missing age data so we will remove these from the dataframe 
+data = data[complete.cases(data$age_years), ]
+
+#get mean age of wave 1
+wave1Data <- data %>% 
+  filter(time == 1) 
+
+meanAgeWave1 <- mean(wave1Data$age_years) #mean age = 9.91
+
+#adjust age by subtracting mean age at Wave 1 from age_years
+data$age_centred <- data$age_years - meanAgeWave1
+head(data$age_centred) #looks okay
+
+
+```
+
+##LCGA 
+###Run classes (1-6)
+
+#See R lccm notes for further details: https://cran.r-project.org/web/packages/lcmm/lcmm.pdf
+
+Notes on model summary output: 
+
+The fixed effects in the class-membership model explain the likelihood of individuals belonging to specific latent classes, while the fixed effects in the longitudinal model explain the within-class variation in the outcome variable over time.
+
+
+
+```{r LGCA}
+# run models with 1-6 classes, each with 100 random starts
+# using the 1-class model to set initial start values: 
+
+set.seed(2507)
+
+lcga1 <- hlme(pds_avg ~ age_centred, subject = "id", ng = 1, data = data) 
+
+lcga2 <- gridsearch(rep = 100, maxiter = 10, minit = lcga1, m=hlme(pds_avg ~ age_centred, subject = "id", ng = 2, data = data, mixture = ~ age_centred)) 
+
+lcga3 <- gridsearch(rep = 100, maxiter = 10, minit = lcga1, m=hlme(pds_avg ~ age_centred, subject = "id", ng = 3, data = data, mixture = ~ age_centred)) 
+
+lcga4 <- gridsearch(rep = 100, maxiter = 10, minit = lcga1, m=hlme(pds_avg ~ age_centred, subject = "id", ng = 4, data = data, mixture = ~ age_centred)) 
+
+lcga5 <- gridsearch(rep = 100, maxiter = 10, minit = lcga1, m=hlme(pds_avg ~ age_centred, subject = "id", ng = 5, data = data, mixture = ~ age_centred)) 
+
+lcga6 <- gridsearch(rep = 100, maxiter = 10, minit = lcga1, m=hlme(pds_avg ~ age_centred, subject = "id", ng = 6, data = data, mixture = ~ age_centred)) 
+
+
+```
+### Compare class models 
+
+
+See this paper for information on a reporting checklist for LCGA results: https://www.tandfonline.com/doi/full/10.1080/10705511.2016.1247646
+
+The documentation for the lcmm package is also helpful, especially the info for summarytable and summaryplot function. 
+
+From these graphs and statistics, it looks like a 2 or 3 class solution is the best fitting model across the different model fit indices. Unlike the female LCGA, a 4 class solution contained a class with <5% of the sample, which did not meet the criteria to be considered a best fitting model as per Jung & Wickrama, 2008.
+
+```{r compare models}
+
+#read in LCGA models previously saved
+
+LCGAresults <- readRDS("../data/LCGASummaryTable_males.rds")
+
+# make table with results for the models: 
+LCGAresults <- summarytable(lcga1, lcga2, lcga3, lcga4,lcga5, lcga6,
+        which=c("G", "conv", "loglik","npm","BIC", "AIC", "SABIC", "ICL", "entropy",  "%class"), display=TRUE)
+
+#convert to df so that we can round to 3 decimal places
+LCGAresults <- as.data.frame(LCGAresults)
+LCGAresults <- LCGAresults %>%
+  mutate_if(is.numeric, list(~round(., 2)))
+
+htmlTable <- htmlTable::htmlTable(LCGAresults)
+htmlTable
+
+#save Class summary table 
+saveRDS(LCGAresults, "../figs/LCGASummaryTable_males.rds")
+save_kable(LCGAresults, "../figs/LCGASummaryTable_males.html")
+
+
+#save outputs so we do not need to re-run models 
+
+saveRDS(lcga1, "../data/lcga1_males.rds")
+saveRDS(lcga2, "../data/lcga2_males.rds")
+saveRDS(lcga3, "../data/lcga3_males.rds")
+saveRDS(lcga4, "../data/lcga4_males.rds")
+saveRDS(lcga5, "../data/lcga5_males.rds")
+saveRDS(lcga6, "../data/lcga6_males.rds")
+
+
+#plot a summary of the results 
+summaryplot(lcga1, lcga2, lcga3, lcga4,
+        which=c("loglik","npm","BIC", "AIC", "SABIC", "ICL", "entropy"), mfrow=c(1,length(which)), xaxis="G" )
+
+#let's look at 2 and 3 class model more closely 
+summary(lcga2)
+summary(lcga3)
+
+```
+
+#GMM 
+Growth mixed modelling - with both a random intercept and slope (GMM-2)
+
+This allows for individual-level variation in baseline PDS scores and growth rate over time
+
+The ‘nwg=T’ statement indicates that we want to allow the variances of the random intercepts to vary across classes.
+
+We will run it without site_id_l and then run a sensitivity analysis with site_id_l. We will also run the models with age as the longitudinal measure of ageing instead of time. We need to centre the age variable to make the intercepts easier to interpret.
+
+Load gmm outputs generated from running this script originally (for reproducing tables etc. for manuscript write up)
+```{r load gmm from earlier analysis}
+
+gmm2_age <- readRDS("../data/gmm2_males.rds")
+gmm3_age <- readRDS("../data/gmm3_males.rds")
+gmm4_age <- readRDS("../data/gmm4_males.rds")
+
+
+```
+
+Run GMM
+```{r GMM}
+set.seed(2507)
+
+gmm1_age <- hlme(pds_avg ~ age_centred, subject = "id", random=~1 + age_centred, ng = 1, data = data) 
+
+gmm2_age <- gridsearch(rep = 100, maxiter = 10, minit = gmm1_age, hlme(pds_avg ~ age_centred, subject = "id", random=~1 + age_centred, ng = 2, data = data, mixture = ~ age_centred, nwg=T))
+
+gmm3_age <- gridsearch(rep = 100, maxiter = 10, minit = gmm1_age, hlme(pds_avg ~ age_centred, subject = "id", random=~1 + age_centred, ng = 3, data = data, mixture = ~ age_centred, nwg=T))
+
+gmm4_age <- gridsearch(rep = 100, maxiter = 10, minit = gmm1_age, hlme(pds_avg ~ age_centred, subject = "id", random=~1 + age_centred, ng = 4, data = data, mixture = ~ age_centred, nwg=T)) 
+
+```
+
+
+```{r GMM results}
+# make table with results:
+
+classSummTbl <- summarytable(gmm2_age, gmm3_age, gmm4_age,
+        which=c("G", "conv", "loglik","npm","BIC", "AIC", "SABIC", "ICL", "entropy",  "%class"), display=TRUE )
+as.data.frame(classSummTbl)
+
+#convert to df so that we can round to 3 decimal places
+classSummTbl <- as.data.frame(classSummTbl)
+classSummTbl <- classSummTbl %>%
+  mutate_if(is.numeric, list(~round(., 2)))
+classSummTbl
+
+htmlTable <- htmlTable::htmlTable(classSummTbl)
+View(htmlTable)
+
+
+#save GMM Class summary table 
+saveRDS(classSummTbl, "../figs/GMMSummaryTable_males.rds")
+
+# #export table as a docx file
+# library(modelsummary)
+# modelsummary(classSummTbl, output = "flextable") |>
+#     theme_zebra() |>
+#     save_as_docx(path = "../figs/gmmTblMales.docx")
+
+
+
+# summaryplot(gmm1_age ,gmm2_age ,gmm3_age, gmm4_age, gmm5_age, gmm6_age,
+#         which=c("loglik","npm","BIC", "AIC", "SABIC", "ICL", "entropy"), mfrow=c(1,length(which)), xaxis="G" )
+
+
+```
+
+Save GMM outputs
+```{r, save or load gmm outputs for future work}
+
+saveRDS(gmm1_age, "../data/gmm1_males.rds")
+saveRDS(gmm2_age, "../data/gmm2_males.rds")
+saveRDS(gmm3_age, "../data/gmm3_males.rds")
+saveRDS(gmm4_age, "../data/gmm4_males.rds")
+
+
+```
+
+
+###Inspect models
+#### 3 class
+
+Let's look at this class solution more closely. 
+We need to determine whether there are significant differences in the intercept and slopes of the classes before we do further modelling. 
+
+```{r inspect 3 class solution, echo=FALSE}
+summary(gmm3_age)
+# N unique IDs = 4737
+# N observations = 17432
+
+#extract standard deviation of the mean intercept and slope for each class for table in manuscript
+#do this manually using values in summary output
+# standard deviation = SE of coef multiplied by number of observations
+
+#class 1 = early starters; class 2 = slow developers, class 3 = typical developers
+
+# #Intercept
+0.06996*sqrt(17432) #class 1 SD = 9.24
+0.00839*sqrt(17432) #class 2 SD = 1.11
+0.01206*sqrt(17432) #class 3 SD = 1.59
+# 
+# #slope
+0.01950*sqrt(17432) #class 1 SD = 2.57
+0.00435*sqrt(17432) #class 2 SD = 0.57
+0.00591*sqrt(17432) #class 3 SD = 0.78
+
+
+#prepare data for plotting
+
+data2 = data[complete.cases(data$pds_avg), ] #ids used in gmm, N = 17432  observations. 
+length(unique(data2$src_subject_id)) #get counts
+length(unique(data2$id)) #get counts 
+
+data3Class = gmm3_age$predRE #gives dataframe with intercept and slope
+#rename variable "age_centred" to slope from the predRE outcome to avoid confusion
+data3Class <- rename(data3Class, slope = age_centred)
+finalData3Class = merge(data2, data3Class, by = "id")
+
+# Extract the latent class membership probabilities for each participant
+ClassAssignments3 <- data.frame(gmm3_age$pprob$class, gmm3_age$pprob$id) 
+ClassAssignments3 <- ClassAssignments3 %>% 
+  rename(class = gmm3_age.pprob.class,
+         id = gmm3_age.pprob.id)
+
+cleanData3Class <- merge(finalData3Class, ClassAssignments3, by = "id") #make new df with class assignments and id for 3 class solution
+
+#change class names so that they are descriptive
+#change to factor first
+cleanData3Class$class <- as.factor(cleanData3Class$class)
+cleanData3Class <- cleanData3Class %>% 
+    mutate(class_label = case_when(class == "1" ~ "Early starters",
+                                   class =="2" ~ "Slow developers",
+                                   class =="3" ~ "Typical developers"))
+
+#get counts per puberty class
+counts <-  ClassAssignments3 %>%
+  group_by(class) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+```
+#####New Figures
+Make figure showing regression line and individual data points per class
+
+```{r new fig 1}
+fig1 <- ggplot(cleanData3Class, aes(x = age_years, y = pds_avg, color = as.factor(class_label))) +
+  geom_smooth(aes(fill = as.factor(class_label)), method = "lm", se = TRUE, size = 1.5, linetype = "solid", alpha = 0.5) +  # Increase alpha for more visibility +
+  geom_point(alpha = 0.5, size = 2, position = position_jitter(width = 0.1, height = 0)) +  # Add jittered points to avoid overplotting +
+  labs(
+    title = "A. Pubertal maturation trajectories from ages 9 to 14 (T1 to T4)",
+    x = "Age in years",
+    y = "PDS average score",
+    color = "Class", #title for the color legend
+    fill = "Class") +
+  scale_color_manual(values = c("#00b9e3","#ae87ff", "#d39200"),
+                     limits = c("Early starters", "Typical developers","Slow developers")) +
+  scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200"),
+                    limits = c("Early starters", "Typical developers", "Slow developers")) +  # Match fill color with line color
+  scale_y_continuous(breaks = seq(0, max(cleanData3Class$pds_avg), by = 0.5)) +
+  theme_classic() +
+  theme(legend.title = element_blank(),
+        legend.text = element_markdown(size = 16, margin = margin(r= 20,l =20)),
+        legend.position = "bottom",
+        plot.margin = margin(t=20, r=10, b=20, l = 10),
+        axis.text.x = element_text(size = 14, hjust = 0.5),
+        axis.text.y = element_text(size = 14, hjust = 0.5),
+        axis.title = element_text(size = 16, hjust = 0.5),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5)) +
+        guides(color = guide_legend(override.aes = list(linetype = "blank", shape = 16, size = 5)),
+         fill = guide_legend(override.aes = list(alpha = 1)), byrow = TRUE)
+
+fig1
+
+ggsave("../figs/fig1_males.png", fig1, width = 26, height = 26, units = "cm", dpi = 300)
+
+```
+
+
+```{r new fig 1}
+#ridge plot
+ridge_plot <- ggplot(cleanData3Class, 
+                     aes(x = pds_avg, y = as.factor(time), 
+                    fill = as.factor(class_label))) +
+              geom_density_ridges(scale = 1, alpha = 0.7) +
+              scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200"),
+                    limits = c("Early starters", "Typical developers", "Slow developers"))+
+              labs(title = "B. Distribution of PDS average scores by time and class",
+              x = "PDS average score",
+              y = "Timepoint",
+              fill = "Class") +
+              theme_classic() +
+  theme(legend.title = element_blank(),
+        legend.text = element_markdown(size = 16, margin = margin(r= 20,l =20, b = 20, t = 20)),
+        legend.position = "none",
+        plot.margin = margin(t=20, r=10, b=20, l = 10),
+        axis.text.x = element_text(size = 14, hjust = 0.5),
+        axis.text.y = element_text(size = 14, hjust = 0.5),
+        axis.title = element_text(size = 16, hjust = 0.5),
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5)) +
+        guides(color = guide_legend(override.aes = list(linetype = "blank", shape = 16, size = 5)),
+         fill = guide_legend(override.aes = list(alpha = 1)), byrow = TRUE)
+ridge_plot
+         
+
+#save
+ggsave("../figs/ridge_plot_males_3class.png", ridge_plot, width = 26, height = 26, units = "cm", dpi = 300)
+
+#combine plots A and B 
+
+#Combine plots 
+library(gridExtra)
+library(ggpubr)
+
+fig1_combined <- ggarrange(fig1, ridge_plot, nrow = 2, heights = c(2,1.5))
+ggsave("../figs/fig1_AB_males.png", fig1_combined, width = 26, height = 26, units = "cm", dpi = 300)
+
+```
+
+
+
+1. Make a spaghetti plot showing 100 random IDs from each class so that we can see the spread of the data. Adding all the individual datapoints to Figure 1 is not possible due to there being too many datapoints 
+
+2. Make a raincloud plot that shows the intercept and slope for each class so that we can see the spread of the data. 
+
+
+Filter dataframe so that we only randomly select individuals with four timepoints of data
+```{r random sample 3 class}
+
+# Filter to only include participants with exactly four observations
+perClassDF <- cleanData3Class %>%
+  group_by(id) %>%
+  filter(n() == 4) %>%  # Keep only participants with exactly four observations
+  ungroup() %>%
+  select(c(id, pds_avg, class_label, time))
+
+# Randomly select 100 participants within each class and keep all their observations
+set.seed(2705)
+selected_ids <- perClassDF %>%
+  group_by(class_label) %>%
+  # Select distinct participants within each class
+  distinct(id, .keep_all = TRUE) %>%
+  # Sample 100 participants from each class
+  sample_n(size = 100, replace = FALSE) %>%
+  pull(id)  # Extract the IDs of the selected participants (should be 300)
+
+# Subset the dataframe to keep the IDs of selected participants
+plotDF <- perClassDF %>%
+  filter(id %in% selected_ids)
+
+# Check that subsetting worked - get unique IDs by class
+unique_ids_by_class <- plotDF %>%
+  group_by(class_label) %>%
+  distinct(id) %>%
+  count()
+
+print(unique_ids_by_class)  # This should return 100 IDs per class
+
+
+```
+
+
+```{r make plots}
+
+#Spaghetti plot: regression lines for each participant, colored by class
+#this is very messy given all the datapoints 
+p1 <-  ggplot(plotDF, aes(x = time, y = pds_avg, group = id, color = as.factor(class_label))) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = id), size = 0.5) +
+  scale_color_manual(values = c("#00b9e3","#ae87ff", "#d39200"),
+                     limits = c("Early starters", "Typical developers","Slow developers")) +
+  scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200"),
+                    limits = c("Early starters", "Typical developers", "Slow developers")) +
+  labs(title = "Regression lines for 100 youth per class",
+       x = "Time",
+       y = "PDS Average",
+       color = "Class",
+       fill = "Class") +
+  theme_minimal()
+p1
+ 
+
+
+#assuming linear relationship -- looks like the plot we made for the whole sample
+p2 <- ggplot(plotDF, aes(x = time, y = pds_avg, color = as.factor(class_label))) +
+  geom_smooth(method = "lm", se = TRUE, size = 1.5) +
+  scale_color_manual(values = c("#00b9e3","#ae87ff", "#d39200"),
+                     limits = c("Early starters", "Typical developers","Slow developers")) +
+  scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200"),
+                    limits = c("Early starters", "Typical developers", "Slow developers")) +
+  labs(title = "Mean PDS Average Over Time by Class",
+       x = "Time",
+       y = "PDS Average",
+       color = "Class",
+       fill = "Class") +
+  theme_minimal()
+p2
+
+#with individual points
+p3 <- ggplot(plotDF, aes(x = time, y = pds_avg, color = as.factor(class_label))) +
+  geom_point(alpha = 0.6, position = position_jitter(width = 0.1, height = 0)) +  # Add jittered points to avoid overplotting
+  geom_smooth(method = "lm", se = TRUE, size = 1.5) +
+  scale_color_manual(values = c("#00b9e3","#ae87ff", "#d39200"),
+                     limits = c("Early starters", "Typical developers","Slow developers")) +
+  scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200"),
+                    limits = c("Early starters", "Typical developers", "Slow developers")) +
+  labs(title = "Mean PDS Average Over Time by Class",
+       x = "Time",
+       y = "PDS Average",
+       color = "Class") +
+  theme_minimal()
+p3
+
+#violin plot
+p6 <- ggplot(plotDF, aes(x = factor(time), y = pds_avg, fill = as.factor(class))) +
+  geom_violin(scale = "width", adjust = 1.5, position = position_dodge(width = 0.75), alpha = 0.4) +  # Adjusted alpha for transparency
+  stat_summary(fun = mean, geom = "point", color = "black", size = 2, position = position_dodge(width = 0.75)) +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", color = "black", width = 0.2, position = position_dodge(width = 0.75)) +
+  scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200")) +
+  labs(title = "Distribution of PDS Average Over Time by Class with Mean and Error Bars",
+       x = "Time",
+       y = "PDS Average",
+       fill = "Class") +
+  theme_minimal()
+p6
+
+p7 <- ggplot(plotDF, aes(x = factor(time), y = pds_avg, fill = as.factor(class))) +
+  geom_violin(scale = "width", adjust = 1.5, position = position_dodge(width = 0.75), alpha = 0.2) +
+  geom_point(aes(color = as.factor(class)), 
+             position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75), 
+             shape = 16, size = 2, alpha = 1) +
+  stat_summary(fun = mean, geom = "point", color = "black", shape = 18, size = 3.5, position = position_dodge(width = 0.75)) +  # Black mean points
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", color = "black", size = 0.8, width = 0.2, position = position_dodge(width = 0.75)) +  # Thinner black error bars
+  scale_fill_manual(values = c("#00b9e3", "#ae87ff", "#d39200")) +
+  scale_color_manual(values = c("#00b9e3", "#ae87ff", "#d39200")) +
+  labs(title = "PDS Average Over Time by Class with Data Points, Mean, and CI",
+       x = "Time",
+       y = "PDS Average",
+       fill = "Class",
+       color = "Class") +
+  theme_minimal()
+
+p7
+
+#visualise all plots together
+
+# Combine all plots into one figure
+combined_plot <- (p1 | p2)/
+                  (p3 | p4) /
+                  (p5 | p7)
+# Print the combined plot
+print(combined_plot)
+
+
+
+```
+####2 class
+
+```{r inspect 2 class solution}
+
+# summary(gmm2_age)
+# 
+# #prepare data for plotting
+# 
+# data2 = data[complete.cases(data$pds_avg), ] #ids used in gmm, N = 17432  observations. 
+# length(unique(data2$src_subject_id)) #get counts
+# length(unique(data2$id)) #get counts 
+# 
+# data2Class = gmm2_age$predRE #gives dataframe with intercept and slope
+# #rename variable "age_centred" to slope from the predRE outcome to avoid confusion
+# data3Class <- rename(data2Class, slope = age_centred)
+# finalData2Class = merge(data2, data2Class, by = "id")
+# 
+# # Extract the latent class membership probabilities for each participant
+# ClassAssignments2 <- data.frame(gmm2_age$pprob$class, gmm2_age$pprob$id) 
+# ClassAssignments2 <- ClassAssignments2 %>% 
+#   rename(class = gmm2_age.pprob.class,
+#          id = gmm2_age.pprob.id)
+# 
+# cleanData2Class <- merge(finalData2Class, ClassAssignments2, by = "id") #make new df with class assignments and id for 3 class solution
+# 
+# #change class names so that they are descriptive
+# #change to factor first
+# cleanData2Class$class <- as.factor(cleanData2Class$class)
+# cleanData2Class <- cleanData2Class %>% 
+#     mutate(class_label = case_when(class == "1" ~ "Class 1",
+#                                    class =="2" ~ "Class 2"))
+# 
+# # ageValues <- data.frame(age_centred = c(9-meanAgeWave1, 14-meanAgeWave1)) #make age centred values for first and last time point for plotting purposes
+# # 
+# # predVals <- predictY(gmm2_age, ageValues, var.time =  "age_centred", draws = TRUE)
+# # predVals$pred
+# # 
+# # predValsLong <- pivot_longer(as.data.frame(predVals$pred), cols = Ypred_class1:upper.Ypred_class2, values_to = "value", names_to = "argument")
+# # 
+# # predValsLong$age_years = c(rep(9,9), rep(14,9))
+
+```
+#####New Figures
+
+```{r whole sample}
+
+# fig1_2class <-  ggplot(cleanData2Class, aes(x = time, y = pds_avg, color = as.factor(class))) +
+#   geom_smooth(aes(fill = as.factor(class)), method = "lm", se = TRUE, size = 1.5, linetype = "solid", alpha = 0.5) +  # Increase alpha for more visibility
+#   labs(
+#     title = "Pubertal maturation trajectories from ages 9 to 14 years",
+#     x = "Age (years)",
+#     y = "PDS average score",
+#     color = "Class", #title for the color legend
+#     fill = "Class"
+#   ) +
+#   scale_color_manual(values = c("#00b9e3", "#ae87ff"),
+#                      limits = c("1", "2")) +
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff"),
+#                     limits = c("1", "2")) +  # Match fill color with line color
+#   scale_y_continuous(breaks = seq(0, max(cleanData3Class$pds_avg), by = 0.5)) +
+#   theme_classic() +
+#   theme(legend.title = element_text(size = 16, face = "bold")) +
+#   theme(legend.text = element_text(size = 16)) +
+#   theme(axis.text.x = element_text(size = 14, hjust = 1)) +
+#   theme(axis.text.y = element_text(size = 14, hjust = 1)) +
+#   theme(axis.title = element_text(size = 16, hjust = 0.5)) +
+#   theme(plot.title = element_text(size = 24, face = "bold", hjust = 0.5)) +
+#   guides(color = guide_legend(override.aes = list(linetype = "blank", shape = 16, size = 5)),  # Changes line to point in legend
+#          fill = guide_legend(override.aes = list(alpha = 1)))
+# 
+# fig1_2class
+
+```
+
+
+```{r get random sample for 2 class}
+
+# # Filter to only include participants with exactly four observations
+# perClassDF <- cleanData2Class %>%
+#   group_by(id) %>%
+#   filter(n() == 4) %>%  # Keep only participants with exactly four observations
+#   ungroup() %>%
+#   select(c(id, pds_avg, class, time))
+# 
+# # Randomly select 100 participants within each class and keep all their observations
+# set.seed(2705)
+# selected_ids <- perClassDF %>%
+#   group_by(class) %>%
+#   # Select distinct participants within each class
+#   distinct(id, .keep_all = TRUE) %>%
+#   # Sample 100 participants from each class
+#   sample_n(size = 100, replace = FALSE) %>%
+#   pull(id)  # Extract the IDs of the selected participants (should be 300)
+# 
+# # Subset the dataframe to keep the IDs of selected participants
+# plotDF <- perClassDF %>%
+#   filter(id %in% selected_ids)
+# 
+# # Check that subsetting worked - get unique IDs by class
+# unique_ids_by_class <- plotDF %>%
+#   group_by(class) %>%
+#   distinct(id) %>%
+#   count()
+# 
+# print(unique_ids_by_class)  # This should return 100 IDs per class
+
+```
+
+
+```{r make plots}
+
+# #Spaghetti plot: regression lines for each participant, colored by class
+# #this is very messy given all the datapoints 
+# p1 <-  ggplot(plotDF, aes(x = time, y = pds_avg, group = id, color = as.factor(class))) +
+#   geom_smooth(method = "lm", se = FALSE, aes(group = id), size = 0.5) +
+#   scale_color_manual(values = c("#00b9e3", "#ae87ff")) +
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "Regression lines for 100 youth per class",
+#        x = "Time",
+#        y = "PDS Average",
+#        color = "Class",
+#        fill = "Class") +
+#   theme_minimal()
+# p1
+#  
+# 
+# #summary plot with mean and confidence intervals per class
+# #not assuming linear relationship
+# p2 <-  ggplot(plotDF, aes(x = time, y = pds_avg, color = as.factor(class))) +
+#   stat_summary(fun = mean, geom = "line", size = 1.5) +
+#   stat_summary(fun.data = mean_cl_boot, geom = "ribbon", aes(fill = as.factor(class)), alpha = 0.2, color = NA) +
+#   scale_color_manual(values = c("#00b9e3", "#ae87ff")) +
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "Mean PDS Average Over Time by Class",
+#        x = "Time",
+#        y = "PDS Average",
+#        color = "Class",
+#        fill = "Class") +
+#   theme_minimal()
+# p2
+# 
+# #assuming linear relationship -- looks like the plot we made for the whole sample
+# p3 <- ggplot(plotDF, aes(x = time, y = pds_avg, color = as.factor(class))) +
+#   geom_smooth(method = "lm", se = TRUE, size = 1.5) +
+#   scale_color_manual(values = c("#00b9e3", "#ae87ff")) +
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "Mean PDS Average Over Time by Class",
+#        x = "Time",
+#        y = "PDS Average",
+#        color = "Class",
+#        fill = "Class") +
+#   theme_minimal()
+# p3
+# 
+# #with individual points
+# p4 <- ggplot(plotDF, aes(x = time, y = pds_avg, color = as.factor(class))) +
+#   geom_point(alpha = 0.6, position = position_jitter(width = 0.1, height = 0)) +  # Add jittered points to avoid overplotting
+#   geom_smooth(method = "lm", se = TRUE, size = 1.5) +
+#   scale_color_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "Mean PDS Average Over Time by Class",
+#        x = "Time",
+#        y = "PDS Average",
+#        color = "Class") +
+#   theme_minimal()
+# p4
+# 
+# 
+# #ridge plot
+# p5 <- ggplot(plotDF, aes(x = pds_avg, y = as.factor(time), fill = as.factor(class))) +
+#   geom_density_ridges(scale = 1, alpha = 0.7) +
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "Ridge Plot of PDS Average by Time and Class",
+#        x = "PDS Average",
+#        y = "Time",
+#        fill = "Class") +
+#   theme_minimal()
+# p5
+# 
+# 
+# 
+# #violin plot
+# p6 <- ggplot(plotDF, aes(x = factor(time), y = pds_avg, fill = as.factor(class))) +
+#   geom_violin(scale = "width", adjust = 1.5, position = position_dodge(width = 0.75), alpha = 0.4) +  # Adjusted alpha for transparency
+#   stat_summary(fun = mean, geom = "point", color = "black", size = 2, position = position_dodge(width = 0.75)) +
+#   stat_summary(fun.data = mean_cl_boot, geom = "errorbar", color = "black", width = 0.2, position = position_dodge(width = 0.75)) +
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "Distribution of PDS Average Over Time by Class with Mean and Error Bars",
+#        x = "Time",
+#        y = "PDS Average",
+#        fill = "Class") +
+#   theme_minimal()
+# p6
+# 
+# p7 <- ggplot(plotDF, aes(x = factor(time), y = pds_avg, fill = as.factor(class))) +
+#   geom_violin(scale = "width", adjust = 1.5, position = position_dodge(width = 0.75), alpha = 0.2) +
+#   geom_point(aes(color = as.factor(class)), 
+#              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75), 
+#              shape = 16, size = 2, alpha = 1) +
+#   stat_summary(fun = mean, geom = "point", color = "black", shape = 18, size = 3.5, position = position_dodge(width = 0.75)) +  # Black mean points
+#   stat_summary(fun.data = mean_cl_boot, geom = "errorbar", color = "black", size = 0.8, width = 0.2, position = position_dodge(width = 0.75)) +  # Thinner black error bars
+#   scale_fill_manual(values = c("#00b9e3", "#ae87ff")) +
+#   scale_color_manual(values = c("#00b9e3", "#ae87ff")) +
+#   labs(title = "PDS Average Over Time by Class with Data Points, Mean, and CI",
+#        x = "Time",
+#        y = "PDS Average",
+#        fill = "Class",
+#        color = "Class") +
+#   theme_minimal()
+# 
+# p7
+# 
+# #visualise all plots together
+# 
+# # Combine all plots into one figure
+# combined_plot <- (p1 | p2)/
+#                   (p3 | p4) /
+#                   (p5 | p7)
+# # Print the combined plot
+# print(combined_plot)
+
+```
+
+###export cleaned dataframes
+
+
+```{r tidy up variables for two class solution}
+
+# colnames(cleanData3Class)
+# 
+# #need to rename age_centred.x = actual age_centred
+# #age_centred.y = slope
+# 
+# cleanData2Class <- cleanData2Class %>% 
+#   rename(age_centred = age_centred.x)
+# 
+# cleanData2Class <- cleanData2Class %>% 
+#   rename(slope = age_centred.y)
+
+```
+
+
+
+To update to males. 
+
+```{r 3 class solution intercept and slopes}
+# 
+# #Class 1: Intercept = 1.36463 ; slope = 0.18418
+# #Class 2: Intercept = 1.67281; slope = 0.45672
+# #Class 3: Intercept = 2.53355; slope = 0.23328 
+# 
+# intercept <- c(1.36463, 1.67281, 2.53355)
+# slope <- c(0.18418, 0.45672, 0.23328)
+# class <- c(1:3)
+# percentage <- c(14.63, 76.4, 8.97)
+# 
+# class3Tbl <- data.frame(Class = class, Intercept = intercept, Slope = slope, Percentage  = percentage)
+# class3Tbl
+# 
+# htmlTable <- htmlTable::htmlTable(class3Tbl)
+# View(class3Tbl)
+
+
+```
+
+####Export clean df
+
+We want to make a new dataframe with class membership details for each participant. We will use this dataframe as the input for the analysis in script, analy_main.Rmd
+
+```{r, export clean df}
+
+#save dataframe with 3 class membership details for each participant 
+
+saveRDS(cleanData3Class, "../data/cleanData3ClassMales.rds")
+saveRDS(cleanData2Class, "../data/cleanData2ClassMales.rds")
+
+
+
+```
+
+

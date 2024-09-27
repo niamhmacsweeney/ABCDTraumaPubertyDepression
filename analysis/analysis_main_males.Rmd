@@ -1,0 +1,1421 @@
+---
+title: "analy_main_males"
+author: "Niamh MacSweeney"
+date: "2023-07-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+##Introduction 
+
+This script follows analy_LCGA and uses the LCGA outputs to address the primary aim (and H1 and H2) of our pre-registered study: how exposure to threat in childhood relates to the rate at which MALE youth progress through pubertal maturation (i.e., pubertal tempo), and how this relates to later internalising difficulties.
+
+Required inputs: Dataframe with internalising, trauma, and puberty class variables, as well as the fixed and random effect variables. We will load in our required dataframe from the analy_LCGA script. 
+
+
+```{r set up}
+
+
+#load libraries
+library(tidyverse)
+library(hrbrthemes) #for plotting
+library(stats)
+library(lme4)
+library(lmerTest)
+library(ggpubr) #plots
+library(rstatix) #for avova
+library(lavaan)
+library(lavaanPlot)
+library(tidySEM)
+library(semPlot)
+library(semTable)
+library(ggcorrplot)
+library(bestNormalize) #for transforming data 
+library(gtsummary) #for tables
+library(DT) #interactive table
+library(ggrain)
+library(chisq.posthoc.test) #chisquared post hoc test 
+library(rcompanion)
+library(car) #for levenes test 
+library(kableExtra)
+
+#extra packages for plotting 
+library(nord)
+library(scico)
+library(wesanderson)
+library(taylor)
+library(viridis)
+library(ggtext)     # for extra text options
+library(ggdist)     # for extra geoms
+library(patchwork)  #  composing multiple plots
+library(labelled) #for labelling variables for figs
+
+#regression visualisation
+library(easystats)
+
+#set working directory
+setwd("/ess/p33/cluster/users/niamhma/ABCDTraumaPuberty/analysis")
+
+```
+
+Load in cleaned dataframe created in LGCA script for a three class solution (best fitting class solution). Remember, this is the unrelated sample. 
+```{r load data}
+
+data <- readRDS("../data/cleanData3ClassMales.rds")
+
+```
+
+###Data prep
+
+We need to:
+1. Make dummy variables for the trauma_cat and trauma_bin variables for lavaan and chi-squared post hoc tests 
+2. Make factor variables for site_d_l and ethnicity and a factor trauma variable for table purposes
+3. Use scale function (default settings) to centre and scale numeric variables (mean centred and standardised (divided by standard deviation))
+
+```{r data prep}
+
+#need to recode trauma variable as a dummy variable with three levels, 1=no trauma, 2= one traumatic event, 3 = 2 or more traumatic event 
+data <- data %>% 
+  mutate(trauma_dummy = as.numeric(trauma_cat))
+head(data$trauma_dummy)
+
+str(data)
+#make necessary variables factors 
+data$site_id_l <- as.factor(data$site_id_l)
+data$race_ethnicity <- as.factor(data$race_ethnicity)
+data$trauma_factor <- as.factor(data$trauma_cat)
+
+#recode ethnicity
+#1 = White; 2 = Black; 3 = Hispanic; 4 = Asian; 5 = Other
+data$race_ethnicity <- recode_factor(data$race_ethnicity, 
+                                             "1" = "White",
+                                             "2" = "Black",
+                                             "3" = "Hispanic",
+                                             "4" = "Asian",
+                                             "5" = "Other")
+
+#make recode trauma factor variable for table 
+data$trauma_factor <- recode_factor(data$trauma_factor,
+                                  "0" = "0 traumatic events",
+                                  "1" = "1 traumatic event",
+                                  "2" = "≥2 traumatic events")
+
+```
+
+##Descriptives table 
+Make descriptives table with long format data with participants with complete trauma data
+```{r descriptives with complete trauma data}
+
+dataLongTbl <- data %>% 
+  filter(!is.na(trauma_cat))
+
+#remove people with missing trauma data
+descTableMS <- dataLongTbl %>% 
+  select(c(age_years, BPM_T4, trauma_factor, time, pds_avg, race_ethnicity, education_cat, demo_comb_income_v2)) %>% 
+  tbl_summary(
+    by = time,
+    statistic = list(
+      all_continuous() ~ c("{mean} ({sd})"),
+      all_categorical() ~ c("{n} / {N} ({p}%)")
+    ),  # <-- Closing parenthesis was missing here
+    digits = list(
+      all_continuous() ~ c(2, 2, 0, 0),
+      all_categorical() ~ c(0, 0, 1)
+    ),  # <-- Corrected the typo
+    label = c(
+      age_years ~ "Age in years",
+      BPM_T4 ~ "Internalizing Symptoms (BPM)", 
+      trauma_factor ~ "Trauma exposure",
+      time ~ "time point",
+      pds_avg ~ "PDS average score",
+      race_ethnicity ~ "Ethnicity",
+      education_cat ~ "Parental Education",
+      demo_comb_income_v2 ~ "Household income"
+    ),
+    missing_text = "Missing",
+    type = list(all_continuous() ~ "continuous"),
+    missing = "ifany"
+  ) %>% 
+  bold_labels() %>% 
+  italicize_levels()
+descTableMS
+
+
+
+```
+
+##Tidy data
+### Reduce dataframe
+
+We want to tidy dataframe so that we have the variables we need for each participant. Note that we should have a dataframe with one row for each participant. Because of the input required for the LCGA, the data is in long format. 
+
+To do, keep row for participant when time = 4, this should give us 3579 obs with the correct age_years variable. We can remove the other variables we don't need (e.g., pds_avg and pds_tot) as they are longitudinal and we have repeated measures for each participant. We don't need these data at present. 
+
+```{r tidy df}
+#reduce to variables of we need for main analysis 
+
+df <- data %>% 
+  select(c(id, src_subject_id, BPM_T4, BPM_6m, trauma_cat, trauma_factor,trauma_dummy, trauma_T1, time, pds_avg, pds_tot, age_years, age_centred, site_id_l, bmi_score, race_ethnicity, education_cat, demo_comb_income_v2, slope, intercept, class_label, class))
+
+#keep rows where time = 4, which should give us the correct dataframe 
+df <- df %>%
+  filter(time == 4) 
+
+#check for duplicate IDs
+uniqueIDs <- unique(df$src_subject_id) 
+length(uniqueIDs) 
+
+#rename age_years variable so it is clear that it is the age at T4
+df <- df %>% 
+  rename(age_T4 = age_years)
+
+#our later analysis with lavaan requires complete data for the exogenous variable (trauma) so we will remove people with missing trauma data 
+df <- df %>% 
+  filter(!is.na(trauma_cat))# N=4278
+
+#scale numeric variables and save as new df to use later if needed
+#Note: age has already been centred on T1 mean age so we do not need to scale here. 
+dfScaled <- df
+dfScaled$BPM_T4 <- scale(dfScaled$BPM_T4)
+dfScaled$BPM_6m <- scale(dfScaled$BPM_6m)
+dfScaled$trauma_T1 <- scale(dfScaled$trauma_T1)
+dfScaled$slope <- scale(dfScaled$slope)
+dfScaled$intercept <- scale(dfScaled$intercept)
+
+```
+
+####Trauma/Puberty Figures
+
+#####1. Trauma groups (0,1,2) by puberty class
+
+```{r visualise trauma groups by puberty classes}
+#check for group differences between trauma groups and puberty classification 
+
+#change order of puberty classes for plotting purposes
+df$class_label <- as.factor(df$class_label)
+df$class_label <- factor(df$class_label, levels = c("Early starters", "Typical developers", "Slow developers"))
+
+# Now, create the plot with the modified order
+traumaPubertyBarplot <- ggplot(df, aes(x = class_label, fill = trauma_factor)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Trauma exposure and puberty class membership",
+    x = "Puberty class",
+    y = "Proportion of class"
+  ) +
+  scale_fill_manual(values = wesanderson::wes_palette("AsteroidCity1"),
+                      guide = guide_legend(override.aes = list(size = 6))) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  theme(legend.text = element_text(size = 16)) +
+  theme(axis.text.x = element_text(size = 14, hjust = 0.5)) +
+  theme(axis.text.y = element_text(size = 14, hjust = 1)) +
+  theme(axis.title = element_text(size = 16, hjust = 0.5)) +
+  theme(plot.title = element_text(size = 24, face = "bold", hjust = 0.5)) +
+#try to add count 
+  geom_text(
+    aes(label = after_stat(count)),
+    stat = "count",
+    position = position_fill(vjust = 0.5),
+    size = 5,
+    color = "white"
+  )
+
+traumaPubertyBarplot
+  
+  
+#save as .png
+ggsave("../figs/traumaPubertyBarplot_males.png", plot = traumaPubertyBarplot, width = 16, height = 8, units = "in", dpi = 300)
+
+```
+
+
+#####2. Trauma count & puberty class %
+```{r trauma count puberty class %}
+
+# Step 1: Create a table that counts the number of participants for each number of events within each class
+counts <- df %>%
+  group_by(class_label, trauma_T1) %>%
+  summarise(count = n()) %>%
+  ungroup()
+
+# Step 2: Create a complete grid to ensure all trauma_T1 levels (0-17) are represented
+all_events <- expand.grid(class_label = unique(df$class_label), trauma_T1 = 0:17)
+
+# Step 3: Merge the counts with the full grid, filling in missing counts with 0
+counts_full <- merge(all_events, counts, by = c("class_label", "trauma_T1"), all.x = TRUE)
+counts_full$count[is.na(counts_full$count)] <- 0
+
+# Step 4: Calculate the percentage of participants within each class that experienced each number of events
+percentages <- counts_full %>%
+  group_by(class_label) %>%
+  mutate(percentage = round(count / sum(count) * 100, 2)) %>%
+  ungroup()
+
+# Step 5: Combine the counts and percentages into a single column
+combined <- percentages %>%
+  mutate(combined = paste0(count, " (", percentage, "%)")) %>%
+  select(-count, -percentage) %>%
+  spread(key = trauma_T1, value = combined, fill = "0 (0%)")
+
+# Step 6: Convert the table to an HTML table and save it
+html_table <- combined %>%
+  kable("html", col.names = c("Class Label", paste0("", 0:17))) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+# Save the HTML table to a file
+save_kable(html_table, "../figs/trauma_counts_and_percentages_by_class_males.html")
+
+
+html_table
+
+#very few participants have experience 5+ traumatic events, get % per puberty class for reviewer response
+#Create a new variable indicating whether the participant has experienced more than 4 traumatic events
+df <- df %>%
+  mutate(more_than_4 = ifelse(trauma_T1 > 4, 1, 0))
+
+#Calculate the percentage of participants within each class group that have #experienced more than 4 traumatic events
+percent_more_than_4 <- df %>%
+  group_by(class_label) %>%
+  summarise(
+    total_participants = n(),
+    participants_more_than_4 = sum(more_than_4),
+    percentage_more_than_4 = round((participants_more_than_4 / total_participants) * 100, 2)
+  )
+
+# View the resulting table
+print(percent_more_than_4)
+
+#determine how many experienced more than 2 traumatic events (for justication of coding of trauma variable for reviewer response)
+
+#Create a new variable indicating whether the participant has experienced more than 2 traumatic events
+df <- df %>%
+  mutate(more_than_2 = ifelse(trauma_T1 > 2, 1, 0))
+
+#Calculate the percentage of participants within each class group that have #experienced more than 2 traumatic events
+percent_more_than_2 <- df %>%
+  group_by(class_label) %>%
+  summarise(
+    total_participants = n(),
+    participants_more_than_2 = sum(more_than_2),
+    percentage_more_than_2 = round((participants_more_than_2 / total_participants) * 100, 2)
+  )
+
+# View the resulting table
+print(percent_more_than_2)
+
+#Without grouping variable, see % of participants that experienced more than 2 traumatic events
+percent_more_than_2_whole <- df %>%
+  summarise(
+    total_participants = n(),
+    participants_more_than_2 = sum(more_than_2),
+    percentage_more_than_2 = round((participants_more_than_2 / total_participants) * 100, 2)
+  )
+
+print(percent_more_than_2_whole) #2.62 % of sample (N=96) experienced more than 2 traumatic events
+
+#get % of how many experienced more than 1 traumatic events 
+df <- df %>%
+  mutate(more_than_1 = ifelse(trauma_T1 > 1, 1, 0))
+
+#Calculate the percentage of participants within each class group that have #experienced more than 2 traumatic events
+percent_more_than_1 <- df %>%
+  group_by(class_label) %>%
+  summarise(
+    total_participants = n(),
+    participants_more_than_1 = sum(more_than_1),
+    percentage_more_than_1 = round((participants_more_than_1 / total_participants) * 100, 2)
+  )
+
+# View the resulting table
+print(percent_more_than_1)
+
+#without class grouping
+percent_more_than_1_whole <- df %>%
+  summarise(
+    total_participants = n(),
+    participants_more_than_1 = sum(more_than_1),
+    percentage_more_than_1 = round((participants_more_than_1 / total_participants) * 100, 2)
+  )
+
+
+```
+
+##### 3. Trauma type counts across sample 
+
+```{r trauma type counts}
+traumaTypeDf <- data %>% 
+  select(c(id, class_label, trauma_T1, trauma_factor, trauma_cat, accident_car, accident_other, fire, nat_disaster, witness_terorism, witness_war_zone, witness_stab_shoot, shot_stab_non_fam, shot_stab_by_adult_home, beaten_bruises_by_adult_home, threat_kill_non_fam, threat_kill_fam, witness_grown_up_fight, sex_abuse_by_adult_home, sex_abuse_non_fam, sex_abuse_by_peer, sudden_death_loved_one))
+
+#keep rows where time = 4, which should give us the correct dataframe 
+traumaTypeDf <- data %>%
+  filter(time == 4) 
+
+#check for duplicate IDs
+uniqueIDs <- unique(traumaTypeDf$id) 
+length(uniqueIDs) 
+
+#our later analysis with lavaan requires complete data for the exogenous variable (trauma) so we will remove people with missing trauma data 
+traumaTypeDf  <- traumaTypeDf %>% 
+  filter(!is.na(trauma_cat)) #N = 4377
+```
+
+
+```{r add labels to variables and plot}
+#add labels to variables for plotting using labelled function
+
+#write a function to do this so we can use it again 
+
+# Function to assign labels to variables
+assign_labels <- function(dfFun, labels) {
+  for (var_name in names(labels)) {
+    if (var_name %in% names(dfFun)) {
+      var_label(dfFun[[var_name]]) <- labels[[var_name]]
+    } else {
+      warning(paste("Variable", var_name, "not found in the data frame."))
+    }
+  }
+  return(dfFun)
+}
+
+#define df
+
+dfFun <- traumaTypeDf
+
+#define labels 
+labels <- list(
+  accident_car = "Involved in a car accident",
+  accident_other = "Involved in another significant accident",
+  fire = "Witnessed or involved in a fire",
+  nat_disaster = "Witnessed a natural disaster",
+  witness_terorism = "Witnessed an act of terrorism",
+  witness_war_zone = "Witnessed a war zone",
+  witness_stab_shoot = "Witnessed a stabbing/shooting",
+  shot_stab_non_fam = "Shot/stabbed/beaten by non-family member",
+  shot_stab_by_adult_home = "Shot/stabbed/beaten by adult at home",
+  beaten_bruises_by_adult_home = "Beaten to point of bruising by adult at home",
+  threat_kill_non_fam = "Threatened to be killed by non-family member",
+  threat_kill_fam = "Threatened to be killed by family member",
+  witness_grown_up_fight = "Witnessed adults fighting at home",
+  sex_abuse_by_adult_home = "Experienced sexual abuse by adult at home",
+  sex_abuse_non_fam = "Experienced sexual abuse by non-family member",
+  sex_abuse_by_peer = "Forced to do something sexually by peer",
+  sudden_death_loved_one = "Experienced sudden unexpected death of a loved one"
+)
+
+# Apply function to assign labels
+traumaTypeDf <- assign_labels(dfFun, labels)
+
+#Create frequency table
+frequency_table <- traumaTypeDf %>%
+  select(accident_car:sudden_death_loved_one) %>%  # Select the trauma-related columns
+  summarise_all(sum, na.rm = TRUE) %>%  # Sum the counts for each trauma category
+  pivot_longer(cols = everything(), names_to = "Trauma_Category", values_to = "Count") %>%  # Reshape to long format
+  arrange(desc(Count))  # Sort by the count in descending order
+
+#replace Trauma_Category with with labels defined above
+frequency_table$Trauma_Category <- factor(frequency_table$Trauma_Category,
+                                          levels = names(labels),
+                                          labels = unlist(labels))
+
+#check this works by printing frequency table
+print(frequency_table)
+
+
+#Make bar chart of trauma frequencies with counts on bars and each bar in a different color
+
+traumaTypeBarChart <- ggplot(frequency_table, aes(x = reorder(Trauma_Category, Count), y = Count, fill = Trauma_Category)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = Count), hjust = -0.3, size = 3.5) +  # Add counts on the bars
+  coord_flip() +  # Flip coordinates for better readability
+  labs(title = "Frequency of Trauma Exposures", x = "Trauma Category", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none") +  # Remove the legend for a cleaner look
+  scale_fill_manual(values = scales::hue_pal()(length(frequency_table$Trauma_Category)))  # Different color for each bar
+
+
+#save as .png
+ggsave("../figs/traumaTypeCountsBarChart_males.png", plot = traumaTypeBarChart, width = 16, height = 10, units = "in", dpi = 300)
+
+
+```
+
+
+##Hypothesis 1
+#### ANOVA: Puberty and trauma exposure 
+
+```{r ANOVA puberty trauma}
+
+
+levene_test(trauma_dummy ~ class_label, data = df) #homogeneity of variance assumption violated 
+qqnorm(df$trauma_dummy) 
+shapiro.test(df$trauma_dummy) #normality assumption violated also
+
+
+kruskal.test(trauma_dummy ~ class_label, data = df) #p<0.001, suggests there is a significant difference between groups
+
+#posthoc Dunn Test for pairwise comparison 
+library(dunn.test)
+dunn.test(df$trauma_dummy, g=df$class_label, method="bonferroni", list = TRUE)
+
+#frequency table for trauma 
+trauma_frq <- df%>% 
+  group_by(class_label) %>% 
+  get_summary_stats(trauma_dummy, show = c("mean", "sd", "ci"))
+trauma_frq
+
+```
+#### ANOVA: Puberty and depression 
+
+Test whether puberty class membership is associated with depression 
+Normality assumptions were not met for ANOVA test so non-parametric equivalents were carried out. 
+
+```{r ANOVA puberty depression}
+
+levene_test(BPM_T4 ~ class_label, data = df) #homogeneity of variance assumption violated 
+qqnorm(df$BPM_T4) 
+shapiro.test(df$BPM_T4) #normality assumption violated also
+
+kruskal.test(BPM_T4 ~ class_label, data = df) #p<0.28, suggests there is NOT a significant difference between groups
+
+str#posthoc Dunn Test for pairwise comparison 
+library(dunn.test)
+dunn.test(df$BPM_T4, g=df$class_label, method="bonferroni", list = TRUE)
+
+#frequency table for depression 
+depression_frq <- df%>% 
+  group_by(class_label) %>% 
+  get_summary_stats(BPM_T4, show = c("mean", "sd", "ci"))
+depression_frq
+
+
+```
+
+###Test direct effect
+
+```{r trauma dep lm}
+
+#without transforming - really non normal residuals. 
+modCatNoTrans <- lmer(BPM_T4 ~ trauma_cat + age_T4 + (1|site_id_l), data = dfScaled)
+summary(modCatNoTrans)
+
+#look at residuals of non transformed model
+resid <- residuals(modCatNoTrans)
+hist(resid) #look right skewed
+shapiro_test(resid) #indicates that the data is not normal. 
+
+#make nicer histogram for paper
+library(viridis)
+untransBPMPlot <- ggplot(data = data.frame(resid = resid), aes(x = resid)) +
+  geom_histogram(binwidth = .8, fill = viridis(1)) +
+  labs(title = "Untransformed BPM total score ", x = "Residuals", y = "Frequency") +
+  theme_minimal() +
+  scale_fill_viridis(option = "magma") +
+  scale_color_viridis(option = "magma") +
+   xlim(-4, 10)
+ggsave("../figs/UntransformedBPMTraumaHist_males.png", plot = untransBPMPlot, width = 6, height = 6, units = "in", dpi = 300)
+
+#transform data using BestNormalize package. 
+yeojohnson_obj <- yeojohnson(dfScaled$BPM_T4)
+dfScaled$BPM_T4Trans <- predict(yeojohnson_obj)
+#rerun  model 
+modCatTrans <- lmer(BPM_T4Trans ~ trauma_cat + age_T4 + (1|site_id_l), data = dfScaled)
+summary(modCatTrans)
+
+#Check model residuals 
+resid <- residuals(modCatTrans)
+hist(resid) #residuals look much better
+
+#make nice histogram 
+transBPMPlot <- ggplot(data = data.frame(resid = resid), aes(x = resid)) +
+  geom_histogram(binwidth = .8, fill = viridis(1)) +
+  labs(title = "Transformed BPM total score ", x = "Residuals", y = "Frequency") +
+  theme_minimal() +
+  scale_fill_viridis(option = "magma") +
+  scale_color_viridis(option = "magma") +
+   xlim(-4, 10)
+ggsave("../figs/TransformedBPMTraumaHist_males.png", plot = transBPMPlot, width = 6, height = 6, units = "in", dpi = 300)
+
+shapiro_test(resid) #still says not normal but large sample size should comply with central limit theory, so it should be okay! 
+
+#transform 6m BPM data 
+
+#transform data using BestNormalize package. 
+yeojohnson_obj <- yeojohnson(dfScaled$BPM_6m)
+dfScaled$BPM_6mTrans <- predict(yeojohnson_obj)
+
+
+#To confirm findings from later mediation analyses, let us look at how trauma exposure is associated with internalising symptoms at age 13, controlling for internalising symptoms measured at age 9. 
+
+
+
+
+
+```
+
+
+##H2: Mediation 
+
+We will use the lavaan package to test for mediation.
+
+We can use bootstraping to account for the non-normal distribution of the data. For our main analysis, we will use a continuous trauma variable, and a continuous depression variable. 
+
+Parallel mediation = slope and intercept
+
+The parallel mediation model will tell us whether, regardless of pubertal status at baseline (the intercept), the rate at which you progress through puberty (the slope), mediates the association between trauma exposure and depression.
+
+We will use the lavaan package to test for mediation. 
+Paths in model:
+
+a = trauma to mediator
+b = depression to mediator
+c = trauma to depression 
+
+Graph_sem tutorial: https://cjvanlissa.github.io/tidySEM/articles/sem_graph.html
+
+Bootstrapping = 5000 interations. 
+
+###Multiple mediation model
+```{r lavaan model}
+
+#multiple mediation model 
+#rename variables so they are clearer when plotted
+dfScaled <- dfScaled %>% 
+  rename(interc = intercept, #rename intercept so that lavaan works
+         trauma = trauma_dummy,
+         intSx = BPM_T4Trans,
+         intSxEarly = BPM_6mTrans,
+         age = age_centred,
+         BMI = bmi_score,
+         site = site_id_l,
+         ethnicity = race_ethnicity,
+         income = demo_comb_income_v2,
+         education = education_cat)
+         
+
+#check covariance between slope and intercept
+cov(df$slope, df$intercept, method = "pearson") #not correlated
+
+modelMulti <- '
+          # multiple mediation model with slope and intercept
+             slope ~ a1*trauma + age
+             interc ~ a2*trauma + age
+             intSx ~ b1*slope + b2*interc + c*trauma + age
+          #  covariance between intercept and slope 
+             slope ~~ interc
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+             indirect2 := a2*b2
+           # total effect
+             total := c + (a1*b1) + (a2*b2) 
+           # direct effect
+             direct := c 
+          '
+set.seed(2507)
+fitMulti <- sem(modelMulti, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 5000, data = dfScaled, fixed.x = FALSE)
+summary(fitMulti,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitMulti , boot.ci.type = "bca.simple")
+
+estimates_multi <- parameterestimates(fitMulti , boot.ci.type = "bca.simple", standardized = TRUE)
+#round to 3 decimal places
+estimates_multi[ , sapply(estimates_multi, is.numeric)] <- round(estimates_multi[ , sapply(estimates_multi, is.numeric)], 3)
+
+#export as table
+write.csv(estimates_multi, file = "../figs/multi_mediation_output.csv")
+
+```
+
+###Intercept only model 
+```{r intercept mediation}
+
+modelInter <- '
+          # mediation model with intercept
+             interc ~ a1*trauma + age
+             intSx ~ b1*interc + c*trauma + age
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+           # total effect
+             total := c + (a1*b1)
+           # direct effect
+             direct := c 
+          '
+set.seed(2507)
+fitInter <- sem(modelInter, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 500, data = dfScaled)
+summary(fitInter, fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitInter, boot.ci.type = "bca.simple")
+modelInterGraph <- graph_sem(model = fitInter)
+modelInterGraph
+```
+
+###Slope only model 
+```{r slope mediation}
+
+modelSlope <- '
+          # mediation model with slope
+             slope ~ a1*trauma + age
+             intSx ~ b1*slope + c*trauma + age
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+           # total effect
+             total := c + (a1*b1)
+           # direct effect
+             direct := c 
+          '
+set.seed(2507)
+fitSlope <- sem(modelSlope, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 500, data = dfScaled)
+summary(fitSlope, fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitSlope, boot.ci.type = "bca.simple")
+modelSlopeGraph <- graph_sem(model = fitSlope, reor)
+modelSlopeGraph
+```
+
+
+##Sensitivity analysis 
+
+###Socio-env covs
+Explore the impact of BMI, household income on mediation model. These are easy to include as covs because BMI is numeric and household income is a ordinal variable. 
+
+As we have nominal variables, site and ethnicity, they will need to be converted to dummy variables. They both have many levels which may cause modelling issues in lavaan. 
+
+To determine whether there is a lot of variance attributable to site or ethnicity differences, we will calculate the ICC for the main variables: trauma, puberty slope, puberty intercept, and internalising difficulties.
+
+Site ICC values. All very low suggesting that the group level variance is very small and it may not be necesssary to include factor as a covariate
+
+BPM_T4 = 0.0047
+Trauma_T1 = 0.0073
+Intercept = 0.034
+Slope = 0.02
+
+Ethnicity ICC values.
+
+For puberty intercept values, there is some moderate group level variance (ICC = 0.07) so we will include ethnicity as a covaraite in our model using dummy variables. 
+
+BPM_T4 = 0.01
+Trauma_T1 = 0.01
+Intercept = 0.07
+Slope = 0.01
+
+
+
+```{r calculate ICC}
+#use unscaled data
+
+# Calculate ICC for "site"
+
+#Trauma (continous sum score of traumatic events experienced)
+model_site <- lmer(trauma_T1 ~ 1 + (1 | site_id_l), data = df)
+
+#extract icc from model output
+icc_site <- as.numeric(VarCorr(model_site)$site[1]) / 
+            (as.numeric(VarCorr(model_site)$site[1]) + attr(VarCorr(model_site), "sc")^2)
+
+#puberty intercept
+model_site <- lmer(intercept ~ 1 + (1 | site_id_l), data = df)
+
+#extract icc from model output
+icc_site <- as.numeric(VarCorr(model_site)$site[1]) / 
+            (as.numeric(VarCorr(model_site)$site[1]) + attr(VarCorr(model_site), "sc")^2)
+
+#puberty slope
+model_site <- lmer(slope ~ 1 + (1 | site_id_l), data = df)
+
+#extract icc from model output
+icc_site <- as.numeric(VarCorr(model_site)$site[1]) / 
+            (as.numeric(VarCorr(model_site)$site[1]) + attr(VarCorr(model_site), "sc")^2)
+
+#Internalising difficulties
+model_site <- lmer(BPM_T4 ~ 1 + (1 | site_id_l), data = df)
+
+#extract icc from model output
+icc_site <- as.numeric(VarCorr(model_site)$site[1]) / 
+            (as.numeric(VarCorr(model_site)$site[1]) + attr(VarCorr(model_site), "sc")^2)
+
+## Ethnicity (5_levels)
+#Trauma (continous sum score of traumatic events experienced)
+model_ethnicity <- lmer(trauma_T1 ~ 1 + (1 | race_ethnicity), data = df)
+
+#extract icc from model output (ICC = 0.016)
+icc_ethnicity <- as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) / 
+            (as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) + attr(VarCorr(model_ethnicity), "sc")^2)
+
+#puberty intercept
+model_ethnicity <- lmer(intercept ~ 1 + (1 | race_ethnicity), data = df)
+
+#extract icc from model output (ICC = 0.073)
+icc_ethnicity <- as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) / 
+            (as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) + attr(VarCorr(model_ethnicity), "sc")^2)
+
+#puberty slope (ICC = 0.01)
+model_ethnicity <- lmer(slope ~ 1 + (1 | race_ethnicity), data = df)
+
+#extract icc from model output
+icc_ethnicity <- as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) / 
+            (as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) + attr(VarCorr(model_ethnicity), "sc")^2)
+
+#Internalising difficulties ()
+model_ethnicity <- lmer(BPM_T4 ~ 1 + (1 | race_ethnicity), data = df)
+
+#extract icc from model output (ICC = 0.01)
+icc_ethnicity <- as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) / 
+            (as.numeric(VarCorr(model_ethnicity)$race_ethnicity[1]) + attr(VarCorr(model_ethnicity), "sc")^2)
+
+# Check correlations among dummy variables
+cor(dfScaled[, c("ethnicity_White", "ethnicity_Black", "ethnicity_Hispanic", "ethnicity_Asian", "ethnicity_Other")])
+
+
+```
+
+
+```{r prep data for sen analysis}
+
+#inspect dataframe
+str(dfScaled)
+
+#As ethnicity is a nominal variable, we need to create dummy variables for ethnicity
+# 5 levels: White (N =1963); Black (N = 498); Hispanic (N =725); Asian (N = 79); Other (N = 403)
+
+#Make dummy variables 
+
+# Create dummy variables using model.matrix()
+dummies <- model.matrix(~ ethnicity - 1, data = dfScaled)
+
+# View the dummy variables
+head(dummies)
+
+# Optionally, rename the columns of the dummy variables for clarity
+colnames(dummies) <- gsub("ethnicity", "ethnicity_", colnames(dummies))
+
+# Combine the dummy variables with the original data frame
+dfScaled <- cbind(dfScaled, dummies)
+
+##Income 
+#we will treat household income as a continuous variable as it is ordered
+dfScaled$income_num <- as.numeric(dfScaled$income)
+dfScaled$income_num_std <- scale(dfScaled$income_num)
+
+
+##BMI 
+#we will also need to scale BMI 
+dfScaled$BMI_std <- scale(dfScaled$BMI)
+
+#Covariates should now be ready to use in sensitivity analysis
+
+```
+
+```{r mediation with covs}
+
+#+ income_num + BMI_std 
+
+modelMultiCov <- '
+  # multiple mediation model with slope and intercept
+  slope ~ a1*trauma + age + intSxEarly +  
+  ethnicity_White + ethnicity_Black + ethnicity_Hispanic + 
+  ethnicity_Asian + ethnicity_Other
+  
+  interc ~ a2*trauma + age + intSxEarly +  ethnicity_White + ethnicity_Black + ethnicity_Hispanic +     ethnicity_Asian + ethnicity_Other
+  
+  intSx ~ b1*slope + b2*interc + c*trauma + age + intSxEarly + ethnicity_White + ethnicity_Black + ethnicity_Hispanic + ethnicity_Asian + ethnicity_Other
+  
+  # covariance of mediators
+  slope ~~ interc
+  
+  # indirect effect (a*b)
+  indirect1 := a1*b1
+  indirect2 := a2*b2
+  
+  # total effect
+  total := c + (a1*b1) + (a2*b2)
+  
+  # direct effect
+  direct := c
+'
+
+set.seed(2507)
+fitCov <- sem(modelMultiCov, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 500, data = dfScaled, fixed.x = FALSE) 
+#fixed.x = F means that the covariates are considered random, and the means, variances and covariances are free parameters. This allows us to use ML to handle missing data still. 
+summary(fitCov,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitCov, boot.ci.type = "bca.simple")
+fitCovGraph <- graph_sem(model = fitCov)
+fitCovGraph
+
+```
+
+###Earlier dep as cov
+
+We will re-run our main mediation model including earlier depression (measured at 6 months) as a covariate. This is the first timepoint at which youth self-report internalising difficulties are available in ABCD.
+
+```{r early dep cov}
+
+#multiple mediation model with earlier internalising symptoms as a covariate
+
+
+modelEarlyDep <- '
+          # multiple mediation model with slope and intercept
+             slope ~ a1*trauma + age 
+             interc ~ a2*trauma + age
+             intSx ~ b1*slope + b2*interc + c*trauma + age + intSxEarly
+          #  covariance between intercept and slope 
+             slope ~~ interc
+             slope + interc ~~ intSxEarly
+             trauma ~~ intSxEarly
+             age ~~ trauma + intSxEarly
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+             indirect2 := a2*b2
+           # total effect
+             total := c + (a1*b1) + (a2*b2) 
+           # direct effect
+             direct := c 
+          '
+set.seed(2507)
+fitEarlyDep <- sem(modelEarlyDep, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 100, data = dfScaled, fixed.x = FALSE)
+summary(fitEarlyDep,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitEarlyDep , boot.ci.type = "bca.simple")
+
+```
+
+
+
+
+###Un-coded trauma variable
+
+Re-run mediation analysis with un-coded trauma variable as a continuous predictor 
+
+
+
+```{r un-coded trauma variable}
+
+#multiple mediation model 
+#rename variables so they are clearer when plotted
+dfScaled <- dfScaled %>% 
+  rename(interc = intercept, #rename intercept so that lavaan works
+         traumaR = trauma_dummy,
+         intSx = BPM_T4Trans,
+         age = age_centred,
+         BMI = bmi_score,
+         ethnicity = race_ethnicity,
+         income = demo_comb_income_v2,
+         education = education_cat)
+        
+
+modelMultiTraumaR <- '
+          # multiple mediation model with slope and intercept
+             slope ~ a1*traumaR + age
+             interc ~ a2*traumaR + age
+             intSx ~ b1*slope + b2*interc + c*traumaR + age
+          #  covariance between intercept and slope 
+             slope ~~ interc
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+             indirect2 := a2*b2
+           # total effect
+             total := c + (a1*b1) + (a2*b2) 
+           # direct effect
+             direct := c 
+          '
+set.seed(2507)
+fitTraumaR <- sem(modelMultiTraumaR, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 5000, data = dfScaled, fixed.x = FALSE)
+summary(fitTraumaR ,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitTraumaR  , boot.ci.type = "bca.simple")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+Try and re-run model without age --- could include if asked for at later stage. Results don't change. 
+
+Results are the same
+```{r multi med without age}
+
+modelMulti2 <- '
+          # multiple mediation model with slope and intercept
+             slope ~ a1*trauma
+             interc ~ a2*trauma
+             intSx ~ b1*slope + b2*interc + c*trauma
+          #  covariance of mediators
+             slope ~~ interc
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+             indirect2 := a2*b2
+           # total effect
+             total := c + (a1*b1) + (a2*b2)
+           # direct effect
+             direct := c
+          '
+set.seed(2507)
+fitMulti2 <- sem(modelMulti2, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 5000, data = dfScaled)
+summary(fitMulti2,  fit.measures = TRUE, standardized=TRUE)
+parameterestimates(fitMulti2 , boot.ci.type = "bca.simple")
+modelMulti2Graph <- graph_sem(model = fitMulti2)
+modelMulti2Graph
+
+
+```
+
+
+##Exploratory analysis
+###Pubertal timing
+
+We will be using the "data" object that was loaded at the start of this script, and includes repeated measures for each participant ["cleanData3Class5.0.rds"]
+
+```{r view data}
+
+view(data)
+
+```
+
+####Calculate pubertal timing score 
+
+To generate a measure of pubertal timing we will follow the method used by N. Vijayakumar et al. (2023) [https://www.cambridge.org/core/product/identifier/S0033291723001472/type/journal_article], where pubertal timing was calculated using the following linear mixed model:
+
+linear mixed model: PDS_avg ∼ age + (1|subject_id) + (1| site_id).
+
+Update = don't include subject random effect - just the residual. 
+We will then sum the subject specific random effect and the model residuals as the measure of pubertal timing, which reflect ‘stable’ intercept differences per individual (across time points) in addition to residual differences at each time point. This allowed us to estimate a unique value for pubertal timing for each time point. 
+
+[Text above from Vijayakumar et al., 2023 paper]
+
+Note: We will not include age^2 as a covariate in the model so that we are consistent with the models in our earlier analysis, which differs from the Vijayakumar et al. paper. 
+
+We will use the ranef function from lmer to extract the subject specific random effect. See documentation here: https://rdrr.io/cran/lme4/man/ranef.html
+
+```{r calculate pubertal timing score}
+
+data$id <- as.factor(data$id)
+ptMod <- lmer(pds_avg ~ age_centred + (1|id) + (1|site_id_l), data = data)
+summary(ptMod)
+str(ptMod) #gives the structure of the model 
+
+#1 Extract subject specific random effect (this will be the same for each unique participant across timepoints). This is their intercept. 
+
+#need to filter so we have random effects for id only 
+ranefDF <- as.data.frame(ranef(ptMod)) %>% 
+  filter(grpvar == "id")
+
+#save subject specific random effect as new variable in main dataframe (data)
+ranefDF <- ranefDF %>% 
+  rename(id = grp) #rename column so it is the same across both dataframes
+data <- merge(data, ranefDF[, c("id", "condval")], by = "id") #merge by id based on indexing 
+
+#rename condval to sub_ranef
+data <- data %>% 
+  rename(sub_ranef = condval)
+
+#2 Extract residuals (this will differ for each participant across timepoints)
+data$residuals <- resid(ptMod) #given that order of rows is the same, we can just extract resids and add to dataframe
+
+#3 Pubertal timing = residuals 
+
+data <- data %>% 
+  mutate(pt = residuals) #looks good
+
+```
+
+####Make age groups
+We want to group the data into age bins so that we can re-run our mediation analysis within different age groups. This will allow us to test whether there are ages at which pubertal timing might differ in how it mediates the association between early life trauma and later depression. 
+
+We will first group participants based on six month age bins.  
+
+1. 9 to < 9.5 years
+2. 9.5 to < 10 years
+3. 10 to < 10.5 years 
+4. 10.5 to < 11 years
+5. 11 to < 11.5 years 
+6. 11.5 to < 12 years
+7. 12 to < 12.5 years 
+8. 12.5 to < 13 years
+9. 13 to < 13.5 years 
+10. 13.5 to < 14 years 
+
+We will remove participants that fall below the lower limit (N = 57) and upper limit (N = 84) of the first age and last age groups so that the age groupings and sizes are consistent. This will remove 141 IDs in total. 
+
+```{r define age groups}
+
+data <- data %>% 
+  filter(!(data$age_years < 9 | data$age_years >14)) #should remove 144 IDs (N = 15316 obs)
+
+data <- data %>% 
+mutate(age_group = case_when(
+      age_years >= 9 & age_years < 9.5 ~ "1",
+      age_years >= 9.5 & age_years < 10 ~ "2",
+      age_years >= 10 & age_years < 10.5 ~ "3",
+      age_years >= 10.5 & age_years < 11 ~ "4",
+      age_years >= 11 & age_years < 11.5 ~ "5",
+      age_years >= 11.5 & age_years < 12 ~ "6",
+      age_years >= 12 & age_years < 12.5 ~ "7",
+      age_years >= 12.5 & age_years < 13 ~ "8",
+      age_years >= 13 & age_years < 13.5 ~ "9",
+      age_years >= 13.5 & age_years <= 14 ~ "10"
+)) #this looks like it worked!
+
+
+#convert character to numeric 
+data$age_group<- as.numeric(data$age_group)
+
+table(data$age_group) #groups look fairly even
+
+```
+####Check for duplicate IDs in age groups 
+
+It seems that there are duplicate IDs in groups 6,7,8,9,10. 
+
+```{r find duplicate IDs}
+# Group the data by age_group
+grouped_data <- data %>% group_by(age_group)
+
+# Identify duplicate IDs within each age group
+duplicates <- grouped_data %>%
+  filter(n_distinct(src_subject_id) != n()) %>%
+  ungroup()
+
+# Create a data frame with all observations of the duplicate IDs within their respective groups
+all_duplicate_observations <- data %>%
+  filter(age_group %in% duplicates$age_group, src_subject_id %in% duplicates$src_subject_id)
+
+# Filter to only return IDs with the same src_subject_id and age_group
+final_duplicate_observations <- all_duplicate_observations %>%
+  group_by(src_subject_id, age_group) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# View the resulting data frame
+print(final_duplicate_observations)
+
+# #reduce to main variables for inspection purposes
+# final_duplicate_observations <- final_duplicate_observations %>% 
+#   select(c(src_subject_id, age_years, age_group, time))
+```
+
+Given that there are duplicate ids for some participants within the 6-month age groups, we will randomly select an entry per participant so that we only have one observation for each participant in each age group. The intervals between the "yearly" study visits seem very inconsistent for some participants. For example, the follow up time is only two months for some participants! Maybe this is something to consider for future work. How to deal with the variability in follow up timepoints? 
+
+```{r tidy duplicate IDs}
+
+# Randomly select one observation per participant within their age_group
+set.seed(2507)
+selected_observations <- final_duplicate_observations %>%
+  group_by(age_group, src_subject_id) %>%
+  sample_n(1) %>%
+  ungroup()
+
+#remove ids in selected_observations (n=35)
+# Filter here by id and age_years (which is different across duplicate ids) as age_group is not.
+#should have 15291 obs in df
+data_clean <- data %>%
+  anti_join(selected_observations, by = c("age_years", "src_subject_id"))
+
+```
+
+
+We will need to scale the new numeric variables we have added to the dataframe, and then replace the old dfScaled df
+####Prep variables for lavaan
+```{r scale new variables}
+
+
+data <- data %>% 
+  mutate(trauma_dummy = as.numeric(trauma_cat))
+head(data$trauma_dummy)
+
+
+
+#scale non dummy numeric variables and save as new df
+dfScaled <- data
+dfScaled$BPM_T4 <- scale(dfScaled$BPM_T4)
+dfScaled$slope <- scale(dfScaled$slope)
+dfScaled$intercept <- scale(dfScaled$intercept)
+dfScaled$sub_ranef <- scale(dfScaled$sub_ranef)
+dfScaled$trauma_T1 <- scale(dfScaled$trauma_T1)
+dfScaled$pt <- scale(dfScaled$pt)
+view(dfScaled)
+
+```
+
+####Age group mediation
+
+The mediation model set up is the same as our main mediation analysis but the mediator this time is pubertal timing
+
+M = pubertal timing score
+X = Trauma 
+Y = Depression
+
+```{r define lavaan model}
+
+modelPT <- '
+          # mediation model
+             pt ~ a1*trauma_dummy
+             BPM_T4 ~ b1*pt + c*trauma_dummy
+           # indirect effect (a*b)
+             indirect1 := a1*b1
+           # total effect
+             total := c + (a1*b1)
+           # direct effect
+             direct := c 
+          '
+
+```
+
+Get updated table counts per age group after removing duplicates
+```{r age group table}
+
+age_group_counts <- table(dfScaled$age_group)
+view(age_group_counts)
+
+```
+
+Group 1 (9 to 9.5 years old) N = 1198
+```{r group 1}
+
+#filter data
+grp1 <- dfScaled %>% 
+  filter(age_group == 1)
+
+
+set.seed(2507)
+fitGrp1 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp1, fixed.x = FALSE)
+summary(fitGrp1,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp1Est <- parameterestimates(fitGrp1, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp1Vals <- grp1Est[10:12,]
+grp1Vals$Group <- c(1,1,1)
+
+fitGrp1Graph <- graph_sem(model = fitGrp1) #plot
+fitGrp1Graph
+```
+
+Group 2 (9.5 to 10 years old) N = 1066
+```{r group 2}
+
+#filter data
+grp2 <- dfScaled %>% 
+  filter(age_group == 2)
+
+fitGrp2 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp2, fixed.x = FALSE)
+summary(fitGrp2,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp2Est <- parameterestimates(fitGrp2, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp2Vals <- grp2Est[10:12,]
+grp2Vals$Group <- c(2,2,2)
+
+fitGrp2Graph <- graph_sem(model = fitGrp2) #plot
+fitGrp2Graph
+
+```
+Group 3 (10 to 10.5 years old) N = 1956
+```{r group 3}
+
+grp3 <- dfScaled %>% 
+  filter(age_group == 3)
+
+fitGrp3 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp3, fixed.x = FALSE)
+summary(fitGrp3,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp3Est <- parameterestimates(fitGrp3, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp3Vals <- grp3Est[10:12,]
+grp3Vals$Group <- c(3,3,3)
+
+fitGrp3Graph <- graph_sem(model = fitGrp3) #plot
+fitGrp3Graph
+
+
+```
+Group 4 (10.5 to 11 years old) N = 1919
+
+```{r group 4}
+
+grp4 <- dfScaled %>% 
+  filter(age_group == 4)
+
+fitGrp4 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp4, fixed.x = FALSE)
+summary(fitGrp4,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp4Est <- parameterestimates(fitGrp4, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp4Vals <- grp4Est[10:12,]
+grp4Vals$Group <- c(4,4,4)
+
+fitGrp4Graph <- graph_sem(model = fitGrp4) #plot
+fitGrp4Graph
+
+
+```
+Group 5 (11 to 11.5 year olds) N = 1771
+```{r group 5}
+
+grp5 <- dfScaled %>% 
+  filter(age_group == 5)
+
+fitGrp5 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp5, fixed.x = FALSE)
+summary(fitGrp5,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp5Est <- parameterestimates(fitGrp5, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp5Vals <- grp5Est[10:12,]
+grp5Vals$Group <- c(5,5,5)
+
+fitGrp5Graph <- graph_sem(model = fitGrp5) #plot
+fitGrp5Graph
+```
+
+Group 6 (11.5 to 12 year olds) N = 1918
+```{r group 6}
+
+grp6 <- dfScaled %>% 
+  filter(age_group == 6)
+
+fitGrp6 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp6, fixed.x = FALSE)
+summary(fitGrp6,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp6Est <- parameterestimates(fitGrp6, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp6Vals <- grp6Est[10:12,]
+grp6Vals$Group <- c(6,6,6)
+
+fitGrp6Graph <- graph_sem(model = fitGrp6) #plot
+fitGrp6Graph
+```
+
+Group 7 (12 to 12.5 year olds) N = 1948
+```{r group 7}
+
+grp7 <- dfScaled %>% 
+  filter(age_group == 7)
+
+fitGrp7 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp7, fixed.x = FALSE)
+summary(fitGrp7,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp7Est <- parameterestimates(fitGrp7, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp7Vals <- grp7Est[10:12,]
+grp7Vals$Group <- c(7,7,7)
+
+fitGrp7Graph <- graph_sem(model = fitGrp7) #plot
+fitGrp7Graph
+```
+
+Group 8 (12.5 to 13 year olds) N = 1623
+```{r group 8}
+
+grp8 <- dfScaled %>% 
+  filter(age_group == 8)
+
+fitGrp8 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp8, fixed.x = FALSE)
+summary(fitGrp8,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp8Est <- parameterestimates(fitGrp8, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp8Vals <- grp8Est[10:12,]
+grp8Vals$Group <- c(8,8,8)
+
+fitGrp8Graph <- graph_sem(model = fitGrp8) #plot
+fitGrp8Graph
+
+
+```
+
+Group 9 (13 to 13.5 years) N = 1119
+```{r group 9}
+
+grp9 <- dfScaled %>% 
+  filter(age_group == 9)
+
+fitGrp9 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp9, fixed.x = FALSE)
+summary(fitGrp9,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp9Est <- parameterestimates(fitGrp9, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp9Vals <- grp9Est[10:12,]
+grp9Vals$Group <- c(9,9,9)
+
+fitGrp9Graph <- graph_sem(model = fitGrp9) #plot
+fitGrp9Graph
+
+
+```
+Group 10 (13.5 to 14 years) N = 773
+
+```{r group 10}
+
+grp10 <- dfScaled %>% 
+  filter(age_group == 10)
+
+fitGrp10 <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 1000, data = grp10, fixed.x = FALSE)
+summary(fitGrp10,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+grp10Est <- parameterestimates(fitGrp10, boot.ci.type = "bca.simple")
+#extract vals of interest
+grp10Vals <- grp10Est[10:12,]
+grp10Vals$Group <- c(10,10,10)
+fitGrp10Graph <- graph_sem(model = fitGrp10) #plot
+fitGrp10Graph
+
+
+```
+
+####Results table {.tabset}
+
+```{r age group results}
+grp1Vals #not sig
+grp2Vals #not sig
+grp3Vals #not sig after multiple comparison correction (MCC)
+grp4Vals #sig total and direct after MCC
+grp5Vals #not sig after MCC
+grp6Vals #not sig
+grp7Vals #sig total and direct after MCC
+grp8Vals #not sig
+grp9Vals #not sig after MC
+grp10Vals #not sig
+
+#bind dfs together to make a table 
+resultsExpl <- rbind(grp1Vals, grp2Vals, grp3Vals, grp4Vals, grp5Vals, grp6Vals, grp7Vals, grp8Vals, grp9Vals, grp10Vals)
+
+```
+
+####Timing at each timepoint 
+
+Mabe look at this later 
+
+First run mediation model with pubertal timing as the mediator at each follow up time point (T1 to T4)
+
+There is a significant mediation effect of pubertal timing on the relationship between trauma and depression
+```{r pubertal timing as mediator}
+
+modelPT <- '
+          # mediation model
+             pt ~ a*trauma_dummy3 + rane
+             BPM_T4 ~ b*pt + c*trauma_dummy3
+           # indirect effect (a*b)
+             ab := a*b
+           # total effect
+             total := c + (a*b) '
+
+fitPT <- sem(modelPT, missing = "ML", meanstructure = TRUE, se = "bootstrap", bootstrap = 5000, data = dfScaled)
+summary(fitPT,  fit.measures = TRUE, standardized=TRUE)
+# get bias corrected standard errors from the bootstrap
+parameterestimates(fitPT , boot.ci.type = "bca.simple")
+
+modelPTGraph <- graph_sem(model = fitPT) #plot
+
+
+```
+
+

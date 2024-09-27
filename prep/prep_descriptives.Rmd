@@ -1,0 +1,1331 @@
+---
+title: "prep_descriptives"
+author: "Niamh MacSweeney"
+date: "2023-02-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+## Introduction
+
+This script is for a project with N. MacSweeney, P.Thomson, and D. Rakesh on threat exposure, pubertal maturation, and depression risk in female adolescents. 
+
+Our main and pre-registered analyses focus on females but we have re-ran our main analyses in males, at the request of reviewers. See script prep_descriptives_males.Rmd
+
+Preregistration available here: https://osf.io/txsvh (uploaded to OSF on 23.05.23)
+
+## Set up
+
+###Requirements Data: ABCD data release 5.0 (see data dictionary:  https://data-dict.abcdstudy.org/?
+
+Variable names - Trauma: [ABCD Diagnostic Interview for DSM-5 (KSADS) Traumatic Events]: mh_p_ksads_ptsd (parent report); - Pubertal development [Pubertal development scale]: ph_y_pds (youth report); ph_p_pds (parent report) - Mental health [ABCD Youth Summary Scores BPM and POA]: mh_y_bpm
+
+```{r, load libraries, set wd}
+
+library(tidyverse)
+library(ggplot2)
+library(viridis)
+library(hrbrthemes)
+library(stringr)
+library(geomtextpath) #density plot labels
+library(DT) #interactive table
+library(ggrain)
+library(gtsummary)
+library(nlme)
+library(ggridges) #for rain cloud plots ICC
+library(performance) #for calculating 
+library(lmerTest)
+
+setwd("/ess/p33/cluster/users/niamhma/ABCDTraumaPuberty/prep")
+
+```
+
+Main variables:
+- PTSD
+- PDS
+- BPM
+
+Covariates
+- Site
+- Family
+
+Sensitivity analyses
+- Family income (to needs ratio)
+- Parental education
+- Race
+- BMI
+```{r, load data}
+
+#threat exposure
+ptsd <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/mental-health/mh_p_ksads_ptsd.csv")
+
+#parent puberty
+p_pds <-read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/physical-health/ph_p_pds.csv")
+
+#youth puberty 
+y_pds <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/physical-health/ph_y_pds.csv")
+
+#youth BPS summary scores
+bpm <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/mental-health/mh_y_bpm.csv")
+
+
+#covariates and variables for sensitivity analyses
+#site and family id 
+site_fam <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/abcd-general/abcd_y_lt.csv")
+
+#can extract "race_ethnicity" and income information ("demo_comb_income_v2") from this
+demo <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/abcd-general/abcd_p_demo.csv")
+
+#parent mental health data
+parent_mh <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/mental-health/mh_p_asr.csv")
+
+#height and weight measurements 
+anthro <- read.csv("../../../../groups/imaging/abcd/pheno/ABCDStudyNDA_5.0/core/physical-health/ph_y_anthro.csv")
+
+```
+##Sort sex variable in Release 5.0
+
+Note (8/8/23): ABCD removed "sex" variable as a default column in all the csv/Rds files which makes the data cleaning done previously, more difficult.Given the numerous new sex variables in release 5.0, and the fact that our analyses had already progressed significantly using the release 4.0, we will use sex assigned at birth as this variable is the most closely related to biological sex
+
+We will make a dataframe that matches sex assigned at birth to each ID
+```{r sex linking file}
+
+sex <- demo %>% 
+  group_by(eventname, demo_sex_v2) %>% #only collected at baseline
+  count()
+sex
+#males = 6188, #females = 5677, #Inter-sex male = 3 (Total N = 11868) 
+
+#See how this compares to pubertal sex 
+pubertal_sex <- p_pds %>% 
+  group_by(eventname, pubertal_sex_p) %>% 
+  count()
+pubertal_sex
+#males = 6161, #females = 5699, #NA = 8. (Total N = 11868 but the numbers for males and female differs here)
+
+#make sex-ID linking file 
+sex_id <- demo %>% 
+  group_by(src_subject_id) %>% 
+ select(src_subject_id, demo_sex_v2, eventname) %>% 
+  as.data.frame() 
+
+#populate the baseline sex info to other timepoints using fill function from dplyr 
+# Replace NAs in sex based on sex when event name = 1 within each id group
+sex_id <- sex_id %>%
+  group_by(src_subject_id) %>%
+  fill(demo_sex_v2, .direction = "down")  # Replace NAs with last non-NA value -- this worked!
+
+#remove intersex-male participants (N=3)
+sex_id <- sex_id %>% 
+  filter(demo_sex_v2 != 3) 
+
+#remove eventname before merging with other dataframes
+sex_id <- sex_id %>%
+  select(-eventname)
+#rename demo_sex_v2 to "sex" to match rest of script.
+
+sex_id <- sex_id %>% 
+  rename(sex = demo_sex_v2)
+
+#remove duplicate IDs so that we have one row for each participant and their corresponding sex
+#should be N = 11865
+sex_id <- distinct(sex_id, src_subject_id, .keep_all = T)
+
+#change sex column to character variable and code as M = male (1) and F = female (2)
+
+sex_id$sex <- as.factor(sex_id$sex)
+sex_id <- sex_id %>% mutate(sex = recode(sex, 
+                                         "1" = "M", 
+                                         "2" = "F"))
+
+
+```
+Merge sex variable to existing key dataframes 
+```{r merge sex variable}
+
+bpm <- left_join(bpm, sex_id, by =  "src_subject_id")
+
+p_pds <- left_join(p_pds, sex_id, by =  "src_subject_id")
+
+y_pds <- left_join(y_pds, sex_id, by =  "src_subject_id")
+
+ptsd <- left_join(ptsd, sex_id, by =  "src_subject_id")
+
+parent_mh <- left_join(parent_mh, sex_id, by =  "src_subject_id")
+
+site_fam <- left_join(site_fam, sex_id, by =  "src_subject_id")
+
+demo <- left_join(demo, sex_id, by =  "src_subject_id") #should be same as original demo_sex_v2 var but with other timepoints filled in
+
+```
+##Sort age variable in Release 5.0 
+
+Add in age variable to pds dataframe. In release 5.0, "interview age" is no longer included as a default variable so we will need to add in manually. Add into key variables: PDS, PTSD and BPM. Interview age can be found in the "site_id" dataframe
+
+```{r extract age variable}
+
+age_id <- site_fam %>% 
+          select(src_subject_id, interview_age, eventname) %>% 
+  data.frame()
+
+#convert age in months to years
+age_id <- age_id %>% 
+  mutate(age_years = interview_age/12) 
+age_id$age_years  <- round(age_id$age_years, digits = 3) #round to 3 decimal places
+
+#merge with key variables
+bpm <- left_join(bpm, age_id, by =  c("src_subject_id", "eventname")) #note, no baseline data available for bpm 
+
+p_pds <- left_join(p_pds, age_id, by =  c("src_subject_id", "eventname"))
+
+y_pds <- left_join(y_pds, age_id, by =  c("src_subject_id", "eventname"))
+
+ptsd <- left_join(ptsd, age_id, by =  c("src_subject_id", "eventname"))
+
+```
+
+
+Inspect sample sizes for each variable
+
+Timepoints:
+
+-   Trauma at baseline: N = 5524 (females); N = 6052 (males)
+-   Puberty available at baseline (N = full sample), year 1, year 2, year 3 (females = 4909; males = 5424); also year 4 = (F = 2265; M = 2488)
+-   Mental Health available at 3.5 years (42 months): females N = 4082	, males N = 4482,  and 4 years (still only partial) in release 5.0;
+    3 year follow up: N = 4909	 (females); N = 5424 (males). We will use 42 months as this is almost the entire sample. 
+
+ 
+```{r, sample sizes}
+
+ptsdSample <- ptsd %>%
+  group_by(eventname, sex) %>%  #stratify by time and sex
+  count()
+ptsdSample
+
+
+pSample <- p_pds %>% 
+  group_by(eventname, sex) %>% 
+  count()
+pSample
+
+bpmSample <- bpm %>% #note: remember no baseline data available for this! 
+  group_by(eventname, sex) %>%
+  count()
+bpmSample
+
+```
+
+## Data Cleaning
+
+### PDS
+
+We will use parent PDS scores due to high amount of missing data at earlier timepoints for youth self report. 
+
+The Pubertal Development Scale (PDS; Petersen et al., 1988) will be used to examine the perceived development of secondary sex characteristics such as growth spurts, body hair growth, skin changes, breast development and menarche in girls, and voice changes and growth of facial hair in boys. The PDS includes five-items, and each characteristic is rated on a 4-point scale (1 = no development; 2 = development has barely begun; 3 = development is definitely underway; and 4 = development is complete; except menstruation, which is coded 1 = has not begun, 4 = has begun). Thus, higher scores reflect more advanced pubertal maturation. We will use average PDS scores from T1, T2, and T3 as our measure of perceived physical pubertal development at each timepoint. In line with existing research that used ABCD PDS data (Herting et al., 2021), items were considered missing if a response was left blank or answered “I don’t know” or “refused to answer”. Further, if participants had a missing value for any of the five items used to calculate the average PDS score, their average PDS score was coded as “missing”.
+
+```{r, parent PDS}
+#select vars
+parentPds <- p_pds %>% 
+  select(src_subject_id, sex, eventname, age_years,
+         pds_1_p, pds_2_p, pds_3_p, pds_m4_p, pds_m5_p, pds_f4_p, pds_f5b_p)
+
+#change any "I don't know/777" or "Refused to Answer/999" to NA
+
+parentPds[parentPds == 777] <- NA
+parentPds[parentPds == 999] <- NA
+
+#rename baseline response so that timepoints are in correct order when plotting 
+parentPds$eventname <- str_replace(parentPds$eventname, "baseline_year", "0_baseline_year")
+
+#recode eventname responses for ease of plotting
+parentPds <- parentPds %>% 
+mutate(`time` = dplyr::recode(`eventname`,
+                                `0_baseline_year_1_arm_1`="T1",
+                                `1_year_follow_up_y_arm_1`="T2",
+                                `2_year_follow_up_y_arm_1`="T3",
+                                `3_year_follow_up_y_arm_1`="T4",
+                                `4_year_follow_up_y_arm_1` = "T5"))
+
+#Get average parent PDS score
+
+#use case_when to derive pds_avg using female and male specific items
+parentPds <- parentPds %>% 
+  mutate(pds_avg = case_when
+      (sex == "F" ~ rowMeans(select(parentPds, c(pds_1_p, pds_2_p, pds_3_p, pds_f4_p, pds_f5b_p))),
+       sex == "M" ~ rowMeans(select(parentPds, c(pds_1_p, pds_2_p, pds_3_p, pds_m4_p, pds_m5_p))),
+                             TRUE ~ as.integer(NA)))
+
+#plot
+pdsAvgParentPlot <- ggplot(data=parentPds, aes(x=pds_avg, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Average PDS score")
+pdsAvgParentPlot
+
+##Make PDS total score
+parentPds <- parentPds %>% 
+  mutate(pds_tot = case_when
+      (sex == "F" ~ rowSums(select(parentPds, c(pds_1_p, pds_2_p, pds_3_p, pds_f4_p, pds_f5b_p))),
+       sex == "M" ~ rowSums(select(parentPds, c(pds_1_p, pds_2_p, pds_3_p, pds_m4_p, pds_m5_p))),
+                             TRUE ~ as.integer(NA)))
+
+#plot
+pdsTotParentPlot <- ggplot(data=parentPds, aes(x=pds_tot, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Total PDS score")
+pdsTotParentPlot
+
+#Given the partial follow up data in T5, we will only use follow-up data to T4 as in the analysis with release 4.0 
+Pds4Wave <- parentPds %>% #44397 observations
+  filter(time != "T5")
+summary(Pds4Wave)
+
+#remake table with T1 to T4 - for supplementary materials 
+pdsAvgParentPlot <- ggplot(data=Pds4Wave, aes(x=pds_avg, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Average PDS score")
+pdsAvgParentPlot
+
+
+```
+
+Let's look at a raincloud plot to see changes in PDS average scores over time
+Can see clear differences between sexes. 
+```{r, PDS raincloud}
+
+#use 4 wave follow up data with complete cases for pds_avg and pds_tot
+plotPdsData <- Pds4Wave %>% 
+  select(src_subject_id, time, sex, age_years, pds_avg, pds_tot) %>% 
+  filter(complete.cases(.))
+
+# Create the raincloud plot
+pdsTime <- plotPdsData %>%
+  ggplot(aes(x = time, y = pds_avg, fill = sex, color = sex), alpha = .6) +
+  geom_rain(aes(fill = sex, color = sex, group = sex), alpha = .4, adjust = 2.25, show.legend = FALSE) +  # Map color aesthetic here
+  theme_classic() +
+  stat_summary(fun = mean, geom = "line", aes(group = sex, color = sex), alpha = 1, size = 1, show.legend = FALSE) +
+  stat_summary(fun = mean, geom = "point", aes(group = sex, fill = sex), shape = 1, size = 2, color = "black", alpha = 1, show.legend = FALSE) +
+  scale_fill_manual(values = c("#f4cc44", "#7fcdbb"), labels = c("M" = "Males", "F" = "Females")) +
+  scale_color_manual(values = c("#f4cc44", "#7fcdbb"), labels = c("M" = "Males", "F" = "Females")) +
+  labs(
+    title = "Change in PDS average scores over time for males and females",
+    x = "Timepoint",
+    y = "PDS average score",
+    group = "sex"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size = 16),
+    axis.text.x = element_text(size = 16, hjust = 1),
+    axis.text.y = element_text(size = 16, hjust = 1),
+    axis.title = element_text(size = 16, hjust = 0.5),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    legend.key.size = unit(2, "lines"),
+    legend.position = "right"
+  ) +
+  # Add dummy points to create the legend
+  geom_point(aes(x = Inf, y = Inf, color = sex), shape = 16, size = 3.5, show.legend = TRUE) +
+  guides(
+    color = guide_legend(override.aes = list(shape = 16))
+  )
+
+pdsTime
+
+#save figure
+ggsave("../figs/PDS_male_female_change.png", pdsTime, width = 14, height = 10, units = "in", dpi = 300)
+
+```
+
+Get female sample only 
+
+```{r, reduce to females}
+
+femaleParentPds <- Pds4Wave %>% 
+  filter(sex == "F") #obs = 21152
+#remove male variables 
+femaleParentPds <- femaleParentPds %>% 
+  select(-c(pds_m4_p, pds_m5_p))
+
+# Create a custom fill color (green)
+custom_fill_color <- "skyblue3"
+
+#make distribution plot 
+pdsAvgFemalesLong <- ggplot(data=femaleParentPds, aes(x=pds_avg, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+labs(
+    title = "Distribution of PDS average scores from T1 to T4",
+    x = "PDS average score",
+    y = "Density") +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(axis.text.x = element_text(size = 12, hjust = 1)) +
+  theme(axis.text.y = element_text(size = 12, hjust = 1)) +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5)) +
+   scale_fill_manual(values = custom_fill_color)
+pdsAvgFemalesLong
+ggsave("../figs/PDSScoresT1toT4.png", pdsAvgFemalesLong, width = 8, height = 6, units = "in", dpi = 300)
+
+
+#Make raincloud plot for females only 
+
+raincloudPDSFemales <- ggplot(femaleParentPds, aes(x=time, y=pds_avg, fill=sex)) +
+  geom_rain(alpha = .5, adjust = 3) +
+  labs(
+    title = "Distribution of PDS average scores from T1 to T4",
+    x = "Study timepoint",
+    y = "PDS average score") +
+  theme_minimal() +
+  stat_summary(fun = mean, geom = "line", aes(group = sex, color = sex)) +
+  stat_summary(fun = mean, geom = "point",
+               aes(group = sex, color = sex)) +
+  scale_fill_manual(values=custom_fill_color)
+raincloudPDSFemales
+ggsave("../figs/PDSRaincloud.png", raincloudPDSFemales, width = 8, height = 6, units = "in", dpi = 300)
+
+```
+
+Make table for parent PDS to check for missing values (females only)
+```{r, parent PDS table}
+#make table with data and missing data per timepoint 
+pdsTable <- femaleParentPds %>% 
+  select(-c(src_subject_id, sex, eventname)) %>% 
+  tbl_summary(
+    by = time,
+    statistic = list(all_continuous() ~ c("{mean} ({sd})"),
+                     all_categorical() ~ c("{n} / {N}")),
+    digits = list(all_continuous() ~ c(2,2,0,0),
+                  all_categorical() ~ c(0,0,2)),
+    label = c(age_years ~ "age",
+              pds_1_p ~ "Height change", 
+              pds_2_p ~  "Skin changes",
+              pds_3_p ~ "Body hair changes",
+              pds_f4_p ~ "Breast development",
+              pds_f5b_p ~ "Began menstruation",
+              time ~ "time point",
+           pds_avg ~ "PDS average score",
+           pds_tot ~ "PDS total score"),
+    missing_text = "Missing",
+    type = list (all_continuous() ~ "continuous"),
+    missing = "ifany"
+    ) %>% 
+  bold_labels () %>% 
+  italicize_levels() %>% 
+  add_p() %>% 
+  modify_table_body(
+    dplyr::mutate,
+    label = ifelse(label == "Missing",
+                   "Missing (N)",
+                   label))
+pdsTable
+
+
+```
+####Tanner Staging Conversion
+At the request of reviewers, we undertook sensitivity analyses to convert the PDS to Tanner Staging for ease of interpretation. 
+
+We followed the scoring procedure used in the Shiftcliff et al. (2009) paper. This code is not publicly available but was acquired from a collaborator who had previously used the code. Note: Shirtcliff et al., 2009 used child self-report PDS. 
+
+PDS = Tanner: (1=1) (2=2) (3=4) (4=5) 
+
+```{r}
+
+tanner <- parentPds
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+### PTSD
+Exposure to threat will be examined using the post-traumatic stress disorder (PTSD) subscale from the Kiddie Schedule for Affective Disorders and Schizophrenia for DSM-5 (KSADS; Kaufman et al., 1997) administered at T1. This parent-report questionnaire assesses the number of traumatic events ever experienced by the young person and comprises 17-items that are rated “0 = No (has not experienced)” or “1 = Yes (has experienced)”. We will use a sum score of the number of trauma events experienced
+(possible range 0–17) to quantify a young person’s exposure to threat. Specifically, we will calculate the sum of ABCD variables: “ksads_ptsd_raw_754_p” to “ksads_ptsd_raw_770_p” (inclusive) from the data field “abcd_ptsd01”.
+
+```{r, tidy ptsd}
+
+#change baseline name
+ptsd$eventname <- str_replace(ptsd$eventname, "baseline_year", "0_baseline_year")
+
+#reduce sample to baseline 
+ptsd <- ptsd %>% 
+  filter(eventname == "0_baseline_year_1_arm_1") #N = 11,876
+
+#get list of ptsd variable names for later cleaning. 
+ptsdVars <- ptsd %>% 
+  select(starts_with("ksads"))
+
+```
+
+Scoring ptsd
+- Responses are coded "No" = 0, "Yes" = 1
+- Get sum of columns: "ksads_ptsd_raw_754_p" to "ksads_ptsd_raw_770_p"
+
+``` {r, score ptsd}
+#base R solution 
+ptsd$ptsdTot <- rowSums(ptsd[,grepl("^ksads", names(ptsd))] == 1)
+
+#rename cols as original labels not specific
+ptsd <- ptsd %>% 
+  dplyr::rename(accident_car = ksads_ptsd_raw_754_p, 
+         accident_other = ksads_ptsd_raw_755_p,
+         fire = ksads_ptsd_raw_756_p,
+         nat_disaster = ksads_ptsd_raw_757_p,
+         witness_terorism = ksads_ptsd_raw_758_p,
+         witness_war_zone = ksads_ptsd_raw_759_p,
+         witness_stab_shoot = ksads_ptsd_raw_760_p,
+         shot_stab_non_fam = ksads_ptsd_raw_761_p,
+         shot_stab_by_adult_home = ksads_ptsd_raw_762_p,
+         beaten_bruises_by_adult_home = ksads_ptsd_raw_763_p,
+         threat_kill_non_fam = ksads_ptsd_raw_764_p,
+         threat_kill_fam = ksads_ptsd_raw_765_p,
+         witness_grown_up_fight = ksads_ptsd_raw_766_p,
+         sex_abuse_by_adult_home = ksads_ptsd_raw_767_p,
+         sex_abuse_non_fam = ksads_ptsd_raw_768_p,
+         sex_abuse_by_peer = ksads_ptsd_raw_769_p,
+         sudden_death_loved_one = ksads_ptsd_raw_770_p)
+
+traumaTbl <- ptsd %>% 
+  dplyr::select(-c(src_subject_id, age_years, sex, eventname)) #select cols for table
+
+traumaTbl <- data.frame(unclass(summary(traumaTbl)), #make as table
+                           check.names = FALSE)
+DT::datatable(traumaTbl) # get interactive table
+table(ptsd$ptsdTot) #get no. of participants for each grouping of traumatic events. 
+
+ptsdCC <- ptsd %>% 
+  filter(complete.cases(.))  #N = 11575
+
+```
+Visualise/plot PTSD data 
+
+```{r, plot PTSD}
+#simple density plot
+ptsdPlot <- ggplot(data=ptsdCC, aes(x=ptsdTot, group=sex, fill=sex)) +
+    geom_density(adjust=5, alpha = .6) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Count of traumatic events")
+ptsdPlot
+
+
+
+
+#simple histogram 
+histogram <- ptsdCC %>% 
+  filter(sex == "F") %>% 
+ggplot(aes(x=ptsdTot)) +
+    geom_histogram( binwidth=1, fill="#69b3a2", color="#e9ecef", alpha=0.8) +
+    ggtitle("Trauma exposure of youth at T1 (aged 9-10 years)") +
+    theme_classic() +
+    theme(
+      plot.title = element_text(size=15)
+    ) +
+  ylab("Count") +
+  xlab("KSADS-PTSD total score") +
+  scale_x_continuous(breaks = seq(0, 17, by = 1))
+histogram
+
+#rain cloud plot 
+
+ptsdRain <- ggplot(ptsdCC, aes(1, ptsdTot, fill = sex, colour = sex)) +
+  geom_rain(adjust = 5, alpha = .6,
+            boxplot.args = list(color = "black", outlier.shape = NA)) +
+  theme_classic() +
+  scale_fill_brewer(palette = 'Dark2') +
+    scale_color_brewer(palette = 'Dark2')
+ptsdRain
+
+ geom_rain(alpha = .6,
+            boxplot.args = list(color = "black", outlier.shape = NA))
+
+```
+Get female trauma dataframe only 
+
+Complete cases = 5524
+
+```{r, female PTSD df}
+
+femalePtsd <- ptsd %>% 
+  filter(sex == "F") 
+
+summary(femalePtsd)
+
+```
+
+ Recode trauma variable
+
+We want to recode the trauma variable to be categorical rather than continuous.
+
+1. Main analysis = binary variable, 0 = no trauma exposure, 1 = trauma exposure; AND ordinal variable, 0 = no trauma, 1 = 1 traumatic event, 2 + = 2 or more traumatic events. 
+
+2. Sensitivity analysis = continuous variable 
+
+```{r categorical coding of trauma variable}
+
+# Create binary variable
+femalePtsd <- femalePtsd %>%
+  mutate(trauma_bin = ifelse(ptsdTot > 0, 1, 0))
+# Check it worked
+print(femalePtsd)
+#convert to factor 
+femalePtsd$trauma_bin = as.factor(femalePtsd$trauma_bin)
+str(femalePtsd) #check it worked - it did
+
+#check number of participants per group: 0 (no trauma) = 3502; 1 (some trauma exposure) = 2022
+trauma_bin_count <- femalePtsd %>% 
+  count(trauma_bin)
+
+
+#create ordinal variable 
+femalePtsd <- femalePtsd %>%
+  mutate(trauma_cat = case_when(
+        is.na(ptsdTot) ~ NA_real_, #keep NAs as NAs in new var
+        ptsdTot == 0 ~ 0,
+        ptsdTot == 1 ~ 1,
+        ptsdTot >= 2 ~ 2))
+# Check it worked
+summary(femalePtsd$trauma_cat) #check that NAs were handled appropriately --- looks fine! 
+
+#convert to factor 
+femalePtsd$trauma_cat = as.factor(femalePtsd$trauma_cat)
+str(femalePtsd) #check it worked - it did
+
+#No. of participants per group: 0 (no trauma) = 3502; 1 (1 traumatic event) = 1463; 2 (2 + traumatic events) = 559;
+trauma_cat_count <- femalePtsd %>% 
+  count(trauma_cat)
+
+```
+
+###  BPM
+
+Youth internalising difficulties will be assessed using the youth-report Brief Problem Monitor (BPM; Achenbach, 2009), which examines youth behaviour and symptoms over the past week. We will use the BPM data from T4 when youth are aged 12-13 years. The youth-report BPM comprises 19 items rated as 0 (“not true”), 1 (“somewhat true”), and 2 (“very true”), which can be grouped into three domains (attention, internalising, and externalising). 
+
+Given that our outcome measure of interest is mood-related difficulties, we will use the BPM internalising symptoms raw summary score (variable name: bpm_y_scr_internal_r) to quantify youth internalising symptoms. This summary variable is available in the ABCD data field “abcd_yssbpm01” and is the sum of the raw scores for items 9 (“I feel worthless or inferior”), 11 (“I am too fearful or anxious”), 12 (“I feel too guilty”), 13 (“I am self-conscious or easily embarrassed”), 19 (“I am unhappy, sad, or depressed”), and 20 (“I worry a lot”). An internalising summary score is only available for participants that answered all of these associated items.
+
+- Use variable: bpm_y_scr_internal_r
+- Data dictionary expl: This is the raw score of bpm_9_y plus bpm_11_y plus bpm_12_y plus bpm_13_y plus bpm_18_y plus bpm_19_y Validation: All items must be answered
+
+Although the 42 month follow-up timepoint has N = 4082 for females, there is N = 4909 for 3 year so to maximise sample size, we will stick to using the 3 year follow-up data. There seems to be a lot of missing data for the BPM follow up data at 42 month and year 4. 
+
+We also want to control for earlier depressive symptoms to examine whether exposure to trauma is associated with the emergence of depressive symptoms at ages 13/14. We will extract this as a separate dataframe under covariates 
+
+
+
+
+```{r, bpm tidy}
+#change baseline name
+bpm$eventname <- str_replace(bpm$eventname, "baseline_year", "0_baseline_year") #for consistency
+
+intDiff <- bpm %>% 
+  select(src_subject_id, age_years, sex, eventname, bpm_y_scr_internal_r) 
+
+#let's look at Ns for each timepoint again
+bpmSampleTime <- bpm %>% #note: remember no baseline data available for this! 
+  group_by(eventname) %>%
+  count()
+bpmSampleTime
+
+
+intDiff3Yr <- intDiff %>% 
+  filter(eventname == "3_year_follow_up_y_arm_1") # reduce to T4 (year 3 followup), which has the most complete data. NA= 593. 
+summary(intDiff3Yr)
+
+```
+
+
+Plot internalising difficulties scores for males and females to look at spread of data 
+
+
+```{r, intDiff plot}
+#get complete cases for plotting purposes
+
+intDiff3YrPlot <- intDiff3Yr %>% 
+filter(complete.cases(.))
+
+
+# Create the density plot with mean lines and mean annotations
+intDiffPlot <- intDiff3YrPlot %>%
+  ggplot(aes(x = bpm_y_scr_internal_r, fill = sex, color = sex)) +
+  geom_density(alpha = 0.4, adjust = 2.25, show.legend = FALSE) +
+  
+  # Add vertical lines for the means
+  geom_vline(data = intDiff3YrPlot %>% group_by(sex) %>% summarize(mean_bpm = mean(bpm_y_scr_internal_r)),
+             aes(xintercept = mean_bpm, color = sex),
+             linetype = "dashed", size = 1, show.legend = FALSE) +
+  
+  # Annotate the mean values
+  geom_text(data = intDiff3YrPlot %>% group_by(sex) %>% summarize(mean_bpm = mean(bpm_y_scr_internal_r)),
+            aes(x = mean_bpm, y = 0, label = round(mean_bpm, 2)),
+            vjust = 0, hjust = 0, size = 6, color = "black", show.legend = FALSE) +
+  theme_classic() +
+  
+  scale_fill_manual(values = c("#f4cc44", "#7fcdbb"), labels = c("Males", "Females")) +
+  scale_color_manual(values = c("#f4cc44", "#7fcdbb"), labels = c("Males", "Females")) +
+  labs(
+    title = "Distribution of internalising difficulties for males and females at T4",
+    x = "Internalising difficulties (BPM)",
+    y = "Density",
+    group = "sex"
+  ) +
+  
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size = 20),
+    axis.text.x = element_text(size = 16, hjust = 1),
+    axis.text.y = element_text(size = 16, hjust = 1),
+    axis.title = element_text(size = 16, hjust = 0.5),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    legend.key.size = unit(2, "lines"),
+    legend.position = "right"
+  ) +
+  
+  # Add dummy points to create the legend
+  geom_point(aes(x = Inf, y = Inf, color = sex), shape = 16, size = 5, show.legend = TRUE) +
+  guides(color = guide_legend(override.aes = list(shape = 16, size = 5)))
+
+# Display the plot
+intDiffPlot
+
+
+#save figure
+ggsave("../figs/BPM_male_female_means.png", intDiffPlot, width = 14, height = 10, units = "in", dpi = 300)
+```
+
+
+Get female dataframe only 
+```{r, intDiff plot}
+#make female only df: N = 2955
+femaleIntDiff <- intDiff3Yr %>% 
+  filter(sex == "F")
+summary(femaleIntDiff) #Total N = 4909,  NA =285 
+
+```
+###Covariates
+
+Age (fixed effect)
+Site (random effect)
+Family (random effect)
+BPM_6m (fixed effect)
+
+We will also extract visit_type which indicates whether the data collection was remote, hybrid or onsite. 
+
+We will undertake sensitivity analyses to examine whether other factors such as family income (income to needs ratio), parental education, race, and BMI, influence the effects observed in our main models. 
+
+```{r, clean covs}
+
+#Extract site and family from baseline
+head(site_fam)
+covs <- site_fam %>% 
+  select(c(src_subject_id, eventname, sex, site_id_l, rel_family_id, visit_type)) %>% 
+  filter(eventname  == "baseline_year_1_arm_1",
+         sex == "F") #N = 5677
+
+
+####Parental education and income#### 
+covs2 <- demo %>% 
+  select(c(src_subject_id, sex, eventname, demo_roster_v2, demo_comb_income_v2, demo_prnt_ed_v2, race_ethnicity)) %>% 
+  filter(eventname  == "baseline_year_1_arm_1",
+         sex == "F") #N=5677
+
+###Family Income 
+#change any "I don't know/777" or "Refused to Answer/999" to NA
+covs2$demo_comb_income_v2[covs2$demo_comb_income_v2 == 777] <- NA
+covs2$demo_comb_income_v2[covs2$demo_comb_income_v2 == 999] <- NA
+
+###Parental education
+summary(covs2)
+#change any "I don't know/777" or "Refused to Answer/999" to NA
+covs2$demo_prnt_ed_v2[covs2$demo_prnt_ed_v2 == 777] <- NA
+covs2$demo_prnt_ed_v2[covs2$demo_prnt_ed_v2 == 999] <- NA
+
+#Group into the following categories as per journal guidelines:
+#1. without High school diploma (response codes ≤12)
+#2. High school diploma but no college education (response codes = 13 or 14)
+#3. Some college degree (response codes = 15 to 17)
+#4. Degree from a 4-year college or more (response codes ≥18)
+
+covs2 <- covs2 %>%
+  mutate(education_cat = case_when(
+        is.na(demo_prnt_ed_v2) ~ NA_character_, #keep NAs as NAs in new var
+        demo_prnt_ed_v2 < 13 ~ "without HS diploma",
+        demo_prnt_ed_v2 %in% 13:14 ~ "HS graduate no college",
+        demo_prnt_ed_v2 %in% 15:17 ~ "some college education",
+        demo_prnt_ed_v2 > 17 ~ "degree from 4-year college or more"
+        ))
+#convert to factor
+covs2$education_cat <- as.factor(covs2$education_cat)
+table(covs2$education_cat)
+covs2 <- covs2 %>% 
+        select(-c(sex, eventname)) #remove extra cols before merging later 
+
+
+###Household income
+summary(covs2)
+#change any "I don't know/777" or "Refused to Answer/999" to NA
+covs2$demo_comb_income_v2[covs2$ddemo_comb_income_v2 == 777] <- NA
+covs2$demo_comb_income_v2[covs2$demo_comb_income_v2 == 999] <- NA
+
+#recode household income
+covs2$demo_comb_income_v2 <- as.factor(covs2$demo_comb_income_v2)
+covs2$demo_comb_income_v2 <- recode_factor(covs2$demo_comb_income_v2, 
+                                             "1" = "<$5000",
+                                             "2" = "$5,000-$11,999",
+                                             "3" = "$12,000-$15,999",
+                                             "4" = "$16,000-$24,999",
+                                             "5" = "$25,000-$34,999",
+                                             "6" = "$35,000-$49,999",
+                                             "7" = "$50,000-$74,999",
+                                             "8" = "$75,000-$99,999",
+                                             "9" = "$100,000-$199,999",
+                                             "10" = ">$200,000")
+
+
+###family size = demo_roster_v2 --- return to this later if needed. Will use family income to start with
+#Use family size to calculate income to needs ratio
+#Q: How many people are living at your address? INCLUDE everyone who is living or staying at your address for more than 2 months
+#remove people with responses coded 0 (no people living at home) or 1 as this implied there was no child living with parent which would be incorrect
+
+#### BMI ####
+
+#make BMI variable for baseline BMI
+bmi <- anthro %>% 
+  select(c(src_subject_id, eventname, anthroheightcalc, anthroweightcalc)) %>% 
+  filter(eventname == "baseline_year_1_arm_1")
+#BMI = 703 by mean weight in pounds divided by mean height in inches squared
+#get complete cases so that we can calculate BMI
+bmi <- na.omit(bmi)
+bmi <- bmi %>% 
+  mutate(bmi_score = round(703* anthroweightcalc/(anthroheightcalc^2), 2))
+
+#Note: There are some impossible values (e.g., height less 55inches and weight less than 27 pounds). To preserve the largest available sample size for our main analysis, we will remove participants with improbable values before running our sensitivity analyses. 
+
+
+summary(bmi)
+bmi <- bmi %>% select(-c(eventname)) #remove eventname before merge
+
+######### BPM 6 months ##########
+
+#Reduce BPM to 6 months
+
+depEarly <- bpm %>% 
+  dplyr::select(c(src_subject_id, eventname, bpm_y_scr_internal_r))
+
+depEarly <- depEarly %>% 
+  filter(eventname == "6_month_follow_up_arm_1") #N=11389
+
+#remove eventname
+depEarly <- depEarly %>% select(-eventname) 
+
+#rename BPM col before merge 
+depEarly <- depEarly %>%
+  rename(BPM_6m = bpm_y_scr_internal_r)
+
+#### Merge covariate dataframes together ####
+
+#merge covariate dataframes together before main merge
+covs <- left_join(covs, covs2, by = "src_subject_id")
+covs <- left_join(covs, bmi, by = "src_subject_id")
+covs <- left_join(covs, depEarly, by = "src_subject_id")
+
+#check that merge worked!
+summary(covs)
+
+
+```
+
+## Merge Cleaned Data
+
+Let's create a clean data frame of youth that have completed the year 3 follow-up. This will allow us to estimate how much missing data we actually have in our final sample. 
+
+First get list of "valid IDs", i.e., those in the femaleIntDiff dataframe. 
+
+```{r, merge dataframes}
+
+merge1 <- left_join(femaleIntDiff, femalePtsd, by = "src_subject_id") #4909
+merge2 <- left_join(merge1, femaleParentPds, by = "src_subject_id") 
+cleanDf <- left_join(merge2, covs, by = "src_subject_id") 
+
+n_distinct(cleanDf$src_subject_id) #number of observations = 19453, consisting of 4909 unique IDs (this is correct)
+
+#remove extra columns after merge 
+#keep "time" column to indicate the timepoint for the puberty data
+#We already know that the ptsd is from T1 and BPM is from T4 --- N.B! 
+colnames(cleanDf)
+cleanDf <- cleanDf %>% 
+  select(-c(age_years.x, age_years.y, eventname.x, eventname.x.x, eventname.y, eventname.y.y, sex.x.x, sex.y, sex.y.y))
+
+summary(cleanDf)
+colnames(cleanDf)
+
+#Let's rename the BPM and PTSD variable names so that we don't forget that they are from one timepoint only. BPM = T4 and PTSD = T1 (baseline)
+
+cleanDf <- cleanDf %>% 
+  rename(BPM_T4 = bpm_y_scr_internal_r,
+         trauma_T1 = ptsdTot,
+         sex = sex.x) #not the most efficient fix but it works! 
+colnames(cleanDf) #check it worked
+```
+
+##Prepare clean data frame
+
+We will keep all the variables for now as we may want to look at the frequency of specific items within the trauma variable, for example. 
+```{r, df with main vars only}
+
+colnames(cleanDf)
+
+data <- cleanDf
+
+```
+
+##Export cleaned data in long format (see code below for converting to wide format)
+
+```{r, export cleaned data}
+
+
+saveRDS(data, file = "../data/cleanData5.0.rds") #export cleaned dataframe for use in main models 
+
+```
+
+
+
+
+
+For our exploratory analysis, we also need to generate a pubertal timing score. To do this, we will regress total PDS score on age and use the residual obtained as the measure of timing. We need to do this separately for each timepoint. 
+
+###Pubertal timing
+
+```{r}
+
+# Create example data
+data <- data.frame(
+  age_years = c(14, 16, NA, 13, 15, 17),
+  pds_tot = c(52, 48, 50, NA, 45, 51)
+)
+
+# Create a new variable to store residuals
+data$pt <- NA
+
+# Iterate through each row in the data frame
+for (i in 1:nrow(data)) {
+  # Check for missing values in the current row
+  if (is.na(data$age_years[i]) || is.na(data$pds_tot[i])) {
+    # Assign NA to the pt variable for rows with missing values
+    data$pt[i] <- NA
+  } else {
+    # Fit linear model for the current row
+    model <- lm(pds_tot ~ age_years, data = data[!is.na(data$age_years) & !is.na(data$pds_tot),])
+  
+    # Extract residuals
+    residuals <- resid(model)
+  
+    # Assign residuals to the corresponding row in the new variable
+    data$pt[i] <- residuals[i]
+  }
+}
+
+# Print the updated data with residuals
+print(data)
+
+
+```
+
+
+
+
+```{r, in long format}
+
+data <- shortDf #rename dataframe
+
+# Create a new variable to store residuals
+data$pt <- NA
+
+# Iterate through each row in the data frame
+for (i in 1:nrow(data)) {
+  # Check for missing values in the current row
+  if (is.na(data$age_years[i]) || is.na(data$pds_tot[i])) {
+    # Assign NA to the pt variable for rows with missing values
+    data$pt[i] <- NA
+  } else {
+    # Fit linear model for the current row
+    model <- lm(pds_tot ~ age_years, data = data[!is.na(data$age_years) & !is.na(data$pds_tot),])
+  
+    # Extract residuals
+    residuals <- resid(model)
+  
+    # Assign residuals to the corresponding row in the new variable
+    data$pt[i] <- residuals[i]
+  }
+}
+
+# Print the updated data with residuals
+print(data)
+
+
+#let's manually check residuals for a participant --- this works! 
+#choose participant: NDAR_INV019DXLU4
+# temp <- data %>% 
+#   dplyr::filter(src_subject_id == "NDAR_INV019DXLU4") 
+# 
+# temp$pt_test <- NA #create new pt_test variable and assign NA
+# 
+# mod <- lm(pds_tot ~ age_years, data = temp)
+#  residuals <- resid(mod)
+#  temp$pt_test <- residuals
+
+
+```
+
+
+
+###Convert from long to wide 
+
+Residuals are slightly different when generated using long and wide format data -- need to double check this with co-authors (30.05.23)
+
+Some notes:
+- We only have BPM from T4
+```{r, convert to wide}
+wideDf <- shortDf %>%
+  pivot_wider(names_from = time, values_from = c(pds_avg, pds_tot, age_years))
+
+#let's reorder columns so they are a bit more intuitive 
+
+wideDf <- wideDf %>% 
+  select(c(src_subject_id, sex, age_years_T1, age_years_T2, 
+            age_years_T3, age_years_T4, site_id_l, rel_family_id,
+           trauma_T1, BPM_T4, pds_avg_T1, pds_avg_T2, pds_avg_T3, 
+           pds_avg_T4, pds_tot_T1, pds_tot_T2, pds_tot_T3, pds_tot_T4))
+
+saveRDS(wideDf, file = "/Users/niamhmacsweeney/Library/CloudStorage/OneDrive-UniversityofEdinburgh/Edinburgh/ABCD_collabs/ABCD_trauma_puberty_dep/data/cleanDataWide.rds") #export cleaned dataframe for use in main models 
+
+
+
+```
+
+
+```{r,}
+# generate pubertal timing score in wide format
+
+colnames(wideDf)
+
+wideDf$pt_T1 <- NA
+
+#T1
+mod_T1 <- lm(pds_tot_T1 ~ age_years_T1, na.action = na.exclude, data = wideDf) #create linear model
+wideDf$pt_T1 <- ifelse(is.na(wideDf$pds_tot_T1) | is.na(wideDf$age_years_T1), NA, resid(mod_T1)) # save residual but handle missing values 
+
+#repeat for each timepoint
+#T2
+mod_T2 <- lm(pds_tot_T2~age_years_T2, na.action=na.exclude, data = wideDf) # create linear model
+wideDf$pt_T2 <- ifelse(is.na(wideDf$pds_tot_T2) | is.na(wideDf$age_years_T2), NA, resid(mod_T2)) # save residual but handle missing values 
+
+#T3
+mod_T3 <- lm(pds_tot_T3~age_years_T3, na.action=na.exclude, data = wideDf) # create linear model
+wideDf$pt_T3 <- ifelse(is.na(wideDf$pds_tot_T3) | is.na(wideDf$age_years_T3), NA, resid(mod_T3)) # save residual but handle missing values 
+
+#T4
+mod_T4 <- lm(pds_tot_T4~age_years_T4, na.action=na.exclude, data = wideDf) # create linear model
+wideDf$pt_T4 <- ifelse(is.na(wideDf$pds_tot_T4) | is.na(wideDf$age_years_T4), NA, resid(mod_T4)) # save residual but handle missing values 
+
+```
+
+
+#########################
+
+## Requests from reviewers: 
+
+This is code for variable data cleaning that wasn't used in the current analysis but might be useful at a later stage. 
+
+### Youth PDS cleaning and scoring 
+
+
+```{r score and tidy youth pds}
+
+youthPds <- y_pds %>% 
+  select(src_subject_id, sex, eventname, age_years,
+         pds_ht2_y, pds_skin2_y, pds_bdyhair_y, pds_m4_y, pds_m5_y, pds_f4_2_y, pds_f5_y)
+
+#change any "I don't know/777" or "Refused to Answer/999" to NA
+
+youthPds[youthPds == 777] <- NA
+youthPds[youthPds == 999] <- NA
+
+#rename baseline response so that timepoints are in correct order when plotting 
+youthPds$eventname <- str_replace(youthPds$eventname, "baseline_year", "0_baseline_year")
+
+#recode eventname responses for ease of plotting
+youthPds <- youthPds %>% 
+mutate(`time` = dplyr::recode(`eventname`,
+                                `0_baseline_year_1_arm_1`="T1",
+                                `1_year_follow_up_y_arm_1`="T2",
+                                `2_year_follow_up_y_arm_1`="T3",
+                                `3_year_follow_up_y_arm_1`="T4",
+                                `4_year_follow_up_y_arm_1` = "T5"))
+
+#Get average youth PDS score
+
+#use case_when to derive pds_avg using female and male specific items
+youthPds <- youthPds %>% 
+  mutate(pds_avg_youth = case_when
+      (sex == "F" ~ rowMeans(select(youthPds, c(pds_ht2_y, pds_skin2_y, pds_bdyhair_y, pds_f4_2_y, pds_f5_y))),
+       sex == "M" ~ rowMeans(select(youthPds, c(pds_ht2_y, pds_skin2_y, pds_bdyhair_y, pds_m4_y, pds_m5_y))),
+                             TRUE ~ as.integer(NA)))
+
+#plot
+pdsAvgyouthPlot <- ggplot(data=youthPds, aes(x=pds_avg_youth, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Average PDS score")
+pdsAvgyouthPlot
+
+##Make PDS total score
+youthPds <- youthPds %>% 
+  mutate(pds_tot_youth = case_when
+      (sex == "F" ~ rowSums(select(youthPds, c(pds_ht2_y, pds_skin2_y, pds_bdyhair_y, pds_f4_2_y, pds_f5_y))),
+       sex == "M" ~ rowSums(select(youthPds, c(pds_ht2_y, pds_skin2_y, pds_bdyhair_y, pds_m4_y, pds_m5_y))),
+                             TRUE ~ as.integer(NA)))
+#plot
+pdsTotyouthPlot <- ggplot(data=youthPds, aes(x=pds_tot_youth, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Total PDS score")
+pdsTotyouthPlot
+
+#Given the partial follow up data in T5, we will only use follow-up data to T4 as in the analysis with release 4.0 
+Pds4WaveYouth <- youthPds %>% #44397 observations
+  filter(time != "T5")
+summary(Pds4Wave)
+
+#remake table with T1 to T4 - for supplementary materials 
+pdsAvgyouthPlot <- ggplot(data=Pds4WaveYouth, aes(x=pds_avg_youth, group=sex, fill=sex)) +
+    geom_density(adjust=2, alpha = 0.5, na.rm = TRUE) +
+    facet_wrap(~time) +
+    theme(panel.spacing = unit(0.1, "lines"),
+      axis.ticks.x=element_blank()) +
+  scale_fill_brewer(palette="Dark2") +
+  ylab("") +
+  xlab("Average PDS score")
+pdsAvgyouthPlot
+
+#
+
+```
+```{r make raincloud plot for youth pds change over time}
+
+#use 4 wave follow up data with complete cases for pds_avg and pds_tot
+plotPdsDataYouth <- Pds4WaveYouth %>% 
+  select(src_subject_id, time, sex, age_years, pds_avg_youth, pds_tot_youth) %>% 
+  filter(complete.cases(.))
+
+# Create the raincloud plot
+pdsTimeYouth <- plotPdsDataYouth %>%
+  ggplot(aes(x = time, y = pds_avg_youth, fill = sex, color = sex), alpha = .6) +
+  geom_rain(aes(fill = sex, color = sex, group = sex), alpha = .4, adjust = 2.25, show.legend = FALSE) +  # Map color aesthetic here
+  theme_classic() +
+  stat_summary(fun = mean, geom = "line", aes(group = sex, color = sex), alpha = 1, size = 1, show.legend = FALSE) +
+  stat_summary(fun = mean, geom = "point", aes(group = sex, fill = sex), shape = 1, size = 2, color = "black", alpha = 1, show.legend = FALSE) +
+  scale_fill_manual(values = c("#f4cc44", "#7fcdbb"), labels = c("M" = "Males", "F" = "Females")) +
+  scale_color_manual(values = c("#f4cc44", "#7fcdbb"), labels = c("M" = "Males", "F" = "Females")) +
+  labs(
+    title = "Change in PDS average scores over time for males and females",
+    x = "Timepoint",
+    y = "PDS average score",
+    group = "sex"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    legend.text = element_text(size = 16),
+    axis.text.x = element_text(size = 16, hjust = 1),
+    axis.text.y = element_text(size = 16, hjust = 1),
+    axis.title = element_text(size = 16, hjust = 0.5),
+    plot.title = element_text(size = 24, face = "bold", hjust = 0.5),
+    legend.key.size = unit(2, "lines"),
+    legend.position = "right"
+  ) +
+  # Add dummy points to create the legend
+  geom_point(aes(x = Inf, y = Inf, color = sex), shape = 16, size = 3.5, show.legend = TRUE) +
+  guides(
+    color = guide_legend(override.aes = list(shape = 16))
+  )
+
+pdsTimeYouth
+
+#save figure
+ggsave("../figs/PDS_male_female_change_youth_report.png", pdsTimeYouth, width = 14, height = 10, units = "in", dpi = 300)
+
+```
+
+Get female sample only 
+
+```{r reduce to females only}
+
+femaleYouthPds <- Pds4WaveYouth %>% 
+  filter(sex == "F") #obs = 21152
+#remove male variables 
+femaleYouthPds <- femaleYouthPds %>% 
+  select(-c(pds_m4_y, pds_m5_y))
+
+```
+
+
+####Correlation between parent and youth report PDS average and total scores
+
+
+```{r correlation between parent and youth report PDS}
+
+#reduce dataframes to variables needed 
+
+#parent
+shortPDSParent <- Pds4Wave %>% 
+  select(c("src_subject_id", "sex", "eventname", "age_years", "pds_avg", "pds_tot"))
+
+
+#youth 
+shortPDSYouth <- Pds4WaveYouth %>% 
+  select(c("src_subject_id", "sex", "eventname", "age_years", "pds_avg_youth", "pds_tot_youth"))
+
+#merge two short dataframes to make a single dataframe containing youth and parent report PDS
+
+mergedPDS <- left_join(shortPDSParent, shortPDSYouth, by = c("src_subject_id", "sex", "eventname", "age_years"))
+#change some variables to factors
+mergedPDS$src_subject_id <- as.factor(mergedPDS$src_subject_id)
+mergedPDS$eventname <- as.factor(mergedPDS$eventname)
+mergedPDS$sex <- as.factor(mergedPDS$sex)
+
+
+#Due to non-independence of observations of the data and the repeated measures of participants, we will run a mixed-effects model to test the correlation between parent and youth report 
+
+###Full sample: males and females
+
+#basic correlation without accounting for repeated measures
+cor.test(mergedPDS$pds_avg, mergedPDS$pds_avg_youth, method = "pearson") #r = 0.77
+
+#calculate correlations for each timepoint
+# Function to perform cor.test and extract relevant statistics
+get_correlation <- function(x, y) {
+  test <- cor.test(x, y, method = "pearson")
+  return(data.frame(correlation = test$estimate, p.value = test$p.value))
+}
+
+# Group by event name and calculate correlations
+results <- mergedPDS %>%
+  group_by(eventname) %>%
+  summarize(correlation = get_correlation(pds_avg, pds_avg_youth)$correlation,
+            p_value = get_correlation(pds_avg, pds_avg_youth)$p.value)
+
+print(results)
+
+# Visualize the data
+plotPDSCorr <- mergedPDS %>% 
+ggplot(aes(x = pds_tot, y = pds_tot_youth)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "Correlation between parent- and youth-reported PDS", x = "PDS Average Parent-report", y = "PDS Average Youth-report")
+plotPDSCorr 
+
+# Fit the mixed-effects model
+model <- lmer(pds_avg_youth ~ pds_avg*eventname + (1 | src_subject_id), data = mergedPDS)
+
+# Summarize the model
+summary(model)
+
+# Calculate ICC
+icc <- performance::icc(model)
+print(icc)
+
+###females only 
+
+mergedPDSFemales <- mergedPDS %>% 
+  filter(sex == "F")
+
+#basic correlation without accounting for repeated measures
+cor.test(mergedPDSFemales$pds_avg, mergedPDSFemales$pds_avg_youth, method = "pearson") #r = 0.824
+
+#using correlation function specified above, look at correlations over time for females only 
+# Group by event name and calculate correlations
+resultsF <- mergedPDSFemales %>%
+  group_by(eventname) %>%
+  summarize(correlation = get_correlation(pds_avg, pds_avg_youth)$correlation,
+            p_value = get_correlation(pds_avg, pds_avg_youth)$p.value)
+
+print(resultsF)
+
+# Fit the mixed-effects model accounting for repeated measures and a time interaction
+modelF <- lmer(pds_avg_youth ~ pds_avg + (1 | src_subject_id), data = mergedPDSFemales)
+
+# Summarize the model
+summary(modelF)
+
+# Calculate ICC
+icc <- performance::icc(model)
+print(icc)
+
+###males only 
+
+mergedPDSMales <- mergedPDS %>% 
+  filter(sex == "M")
+
+#basic correlation without accounting for repeated measures
+cor.test(mergedPDSMales$pds_avg, mergedPDSMales$pds_avg_youth, method = "spearman") #r = 0.63
+
+#using correlation function specified above, look at correlations over time for males only 
+# Group by event name and calculate correlations
+resultsM <- mergedPDSMales %>%
+  group_by(eventname) %>%
+  summarize(correlation = get_correlation(pds_avg, pds_avg_youth)$correlation,
+            p_value = get_correlation(pds_avg, pds_avg_youth)$p.value)
+print(resultsM)
+
+
+# Fit the mixed-effects model
+modelM <- lmer(pds_avg_youth ~ pds_avg + (1 | src_subject_id), data = mergedPDSMales)
+
+# Summarize the model
+summary(modelM)
+
+# Calculate ICC
+icc <- performance::icc(modelM)
+print(icc)
+
+
+
+```
+
+
+
