@@ -1,4 +1,4 @@
-# ABCDTraumaPuberty
+# ABCDTraumaPubertyDepression
 The role of pubertal development in the association between trauma and internalising symptoms during early adolescence — a longitudinal investigation
 
 # ABCD project on trauma exposure, pubertal development and internalising difficulties
