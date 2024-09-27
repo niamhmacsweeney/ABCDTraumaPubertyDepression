@@ -3,7 +3,7 @@ The role of pubertal development in the association between trauma and internali
 
 # ABCD project on trauma exposure, pubertal development and internalising difficulties
 
-### Authors: Niamh MacSweeney, Phoebe Thomson, Tilmann von Soest, Christian K. Tamnes, and Divyanagna Rakesh
+### Authors: Niamh MacSweeney, Phoebe Thomson, Tilmann von Soest, Christian K. Tamnes, and Divyangana Rakesh
 
 #### Introduction
 
