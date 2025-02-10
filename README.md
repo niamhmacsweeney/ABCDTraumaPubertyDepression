@@ -20,7 +20,7 @@ The data used in this project are from the Adolescent Brain Cognitive Developmen
 There are three main folders:
 
 1.  prep: Scripts for data cleaning and manipulation
-2.  analy: Scripts for analysis
+2.  analysis: Scripts for analysis
 
 File naming system: TYPE_datatype.filetype e.g.,
 PREP_desc_R4.0.csv = prep file for descriptive data
